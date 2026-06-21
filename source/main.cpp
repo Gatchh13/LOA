@@ -1,12 +1,12 @@
 //-----------------------------------------------------------------------------
-// main.cpp
-// Legends of Aetheria — Bootstrap Entry Point
+// main.cpp  (Milestone 1 — World Exploration)
 //
-// Responsible for:
-//   1. System initialization (3DS services)
-//   2. Subsystem construction
-//   3. Main game loop (input → update → render)
-//   4. Clean shutdown
+// Changes from bootstrap:
+//   - TileMap replaced by ZoneManager (owns the active map)
+//   - Zone transitions: detect → fade out → reposition player → fade in
+//   - Camera updated after every player move
+//   - Renderer::beginFrame takes bgColor from current zone
+//   - drawFade and drawZoneName called each frame
 //-----------------------------------------------------------------------------
 
 #include <3ds.h>
@@ -15,23 +15,16 @@
 #include "core/Logger.h"
 #include "core/Clock.h"
 #include "input/InputManager.h"
-#include "world/TileMap.h"
+#include "world/ZoneManager.h"
 #include "render/Camera.h"
 #include "render/Renderer.h"
 #include "entities/Player.h"
 
 int main() {
-    //-------------------------------------------------------------------------
-    // 3DS service initialization
-    // romfsInit() mounts the romfs archive so we can read "romfs:/..." paths.
-    //-------------------------------------------------------------------------
     romfsInit();
 
-    //-------------------------------------------------------------------------
-    // Subsystem initialization
-    //-------------------------------------------------------------------------
     Logger::init();
-    LOG("Legends of Aetheria — Bootstrap Build");
+    LOG("Legends of Aetheria — Milestone 1: World Exploration");
 
     Renderer renderer;
     if (!renderer.init()) {
@@ -42,27 +35,25 @@ int main() {
 
     Clock        clock;
     InputManager input;
-    TileMap      map;
 
-    // Spawn the player at tile (2,2) = pixel (32, 32) — inside the open area.
-    Player       player(2 * TILE_SIZE + 1.0f, 2 * TILE_SIZE + 1.0f);
+    // Start in Town at default spawn [0].
+    ZoneManager  zones;
+    const ZoneDef& startDef   = getZoneDef(ZoneID::TOWN);
+    const SpawnPoint& startSp = startDef.spawns[0];
+    zones.loadZone(ZoneID::TOWN, 0);
 
-    Camera       camera;
+    Player player(startSp.spawn_px, startSp.spawn_py);
+
+    Camera camera;
     camera.update(player.getCenterX(), player.getCenterY(),
-                  map.getWidthPixels(), map.getHeightPixels());
+                  zones.getTileMap().getWidthPixels(),
+                  zones.getTileMap().getHeightPixels());
 
-    LOG("Bootstrap initialized — entering main loop");
+    LOG("World loaded — entering main loop");
 
-    //-------------------------------------------------------------------------
-    // Main loop
-    // aptMainLoop() returns false when the HOME button is pressed or the
-    // system requests an exit (e.g. power-off, sleep mode).
-    //-------------------------------------------------------------------------
     while (aptMainLoop()) {
         // --- Input ---
         input.update();
-
-        // START button = intentional exit
         if (input.startPressed()) {
             LOG("START pressed — exiting");
             break;
@@ -72,24 +63,48 @@ int main() {
         clock.tick();
         float dt = clock.getDelta();
 
-        Vec2 axis = input.getMovementAxis();
-        player.update(axis, dt, map);
+        // Only move the player when no transition is in progress.
+        // (Fade state NONE or FADE_IN — player is visible and in control.)
+        if (zones.getFadeAlpha() < 1.0f) {
+            Vec2 axis = input.getMovementAxis();
+            player.update(axis, dt, zones.getTileMap());
+        }
 
+        // Advance zone fade / check transition triggers.
+        zones.update(player.getCenterTileX(), player.getCenterTileY(), dt);
+
+        // If fade-out is complete, reposition the player and commit.
+        if (zones.transitionReady()) {
+            const SpawnPoint& sp = zones.getPendingSpawn();
+            player.setPosition(sp.spawn_px, sp.spawn_py);
+            zones.commitTransition();   // loads new zone, starts fade-in
+        }
+
+        // Update camera every frame — handles both normal movement and the
+        // hard snap when the player is repositioned on zone entry.
         camera.update(player.getCenterX(), player.getCenterY(),
-                      map.getWidthPixels(), map.getHeightPixels());
+                      zones.getTileMap().getWidthPixels(),
+                      zones.getTileMap().getHeightPixels());
 
         // --- Render ---
-        renderer.beginFrame();
-        renderer.drawTileMap(map, camera);
+        renderer.beginFrame(zones.getTileMap().getBgColor());
+        renderer.drawTileMap(zones.getTileMap(), camera);
         renderer.drawPlayer(player.getX(), player.getY(), camera);
         renderer.drawFPS(clock.getFPS());
+
+        // Fade overlay (drawn on top of world, beneath zone name)
+        renderer.drawFade(zones.getFadeAlpha());
+
+        // Zone name banner (drawn on top of fade so it's visible during fade-in)
+        if (zones.showZoneName()) {
+            renderer.drawZoneName(
+                zones.getCurrentZoneDef().name,
+                zones.getNameAlpha());
+        }
+
         renderer.endFrame();
     }
 
-    //-------------------------------------------------------------------------
-    // Shutdown
-    // Renderer destructor handles C2D/C3D/gfx cleanup.
-    //-------------------------------------------------------------------------
     LOG("Clean shutdown");
     romfsExit();
     return 0;

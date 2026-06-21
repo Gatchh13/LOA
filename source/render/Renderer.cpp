@@ -1,35 +1,33 @@
 //-----------------------------------------------------------------------------
-// Renderer.cpp
-//
-// citro2d coordinate system:
-//   Origin (0,0) is TOP-LEFT of the screen.
-//   X increases rightward, Y increases downward.
-//   Z depth for 2D: use 0.5f for all sprites (ignored by citro2d DrawImage).
-//
-// Sprite sheet layout (tiles.t3x):
-//   Each image in the sheet corresponds to one sprite.
-//   Index 0 = grass tile (16x16)
-//   Index 1 = wall  tile (16x16)
-//   Index 2 = player    (16x16 for bootstrap; 32x32 in final art)
-//
-// If the sprite sheet cannot be loaded (no romfs assets yet), the renderer
-// falls back to drawing solid-color rectangles so the bootstrap is always
-// runnable even before any art exists.
+// Renderer.cpp  (Milestone 1)
 //-----------------------------------------------------------------------------
 
 #include "Renderer.h"
 #include "../core/Logger.h"
+#include "../../include/types.h"
 
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 
-// Background clear color (dark grey)
-static constexpr u32 COLOR_CLEAR  = C2D_Color32(30,  30,  30,  255);
-// Fallback tile colors
-static constexpr u32 COLOR_GRASS  = C2D_Color32(80,  140, 60,  255);
-static constexpr u32 COLOR_WALL   = C2D_Color32(100, 80,  60,  255);
-static constexpr u32 COLOR_PLAYER = C2D_Color32(200, 80,  80,  255);
-static constexpr u32 COLOR_WHITE  = C2D_Color32(255, 255, 255, 255);
+//-----------------------------------------------------------------------------
+// Fallback color table (used when no sprite sheet is loaded)
+// Indexed by tile ID. IDs not listed default to a magenta error color.
+//-----------------------------------------------------------------------------
+u32 Renderer::fallbackColorForTile(u8 tileId) {
+    switch (tileId) {
+        case TILE_GRASS:        return C2D_Color32( 80, 140,  60, 255); // green
+        case TILE_DIRT:         return C2D_Color32(140, 110,  70, 255); // brown
+        case TILE_FOREST_FLOOR: return C2D_Color32( 50,  90,  40, 255); // dark green
+        case TILE_STONE_FLOOR:  return C2D_Color32( 80,  80,  90, 255); // grey
+        case TILE_WATER:        return C2D_Color32( 50,  80, 160, 255); // blue
+        case TILE_WALL:         return C2D_Color32(100,  80,  60, 255); // tan
+        case TILE_TREE:         return C2D_Color32( 30,  70,  20, 255); // dark green
+        case TILE_STONE_WALL:   return C2D_Color32( 55,  55,  65, 255); // dark grey
+        case TILE_FENCE:        return C2D_Color32(130, 100,  50, 255); // wood
+        default:                return C2D_Color32(255,   0, 255, 255); // error magenta
+    }
+}
 
 Renderer::Renderer()
     : m_ready(false)
@@ -37,12 +35,11 @@ Renderer::Renderer()
     , m_botTarget(nullptr)
     , m_spriteSheet(nullptr)
     , m_textBuf(nullptr)
-    , m_font(nullptr)
     , m_useFallbackColors(true)
 {}
 
 Renderer::~Renderer() {
-    if (m_textBuf)    C2D_TextBufDelete(m_textBuf);
+    if (m_textBuf)     C2D_TextBufDelete(m_textBuf);
     if (m_spriteSheet) C2D_SpriteSheetFree(m_spriteSheet);
     C2D_Fini();
     C3D_Fini();
@@ -50,13 +47,11 @@ Renderer::~Renderer() {
 }
 
 bool Renderer::init() {
-    // Initialize 3DS graphics hardware
     gfxInitDefault();
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
     C2D_Init(C2D_DEFAULT_MAX_OBJECTS);
     C2D_Prepare();
 
-    // Create render targets for top and bottom screens
     m_topTarget = C2D_CreateScreenTarget(GFX_TOP,    GFX_LEFT);
     m_botTarget = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
@@ -65,20 +60,15 @@ bool Renderer::init() {
         return false;
     }
 
-    // Allocate text buffer (holds up to 32 glyphs — enough for the FPS string)
-    m_textBuf = C2D_TextBufNew(64);
+    // Larger text buffer for zone name (zone name + FPS)
+    m_textBuf = C2D_TextBufNew(128);
     if (!m_textBuf) {
         ERR("Failed to create text buffer");
         return false;
     }
 
-    // Attempt to load sprite sheet from romfs.
-    // If it fails we run in fallback color mode — this is intentional so the
-    // bootstrap works before any art assets exist.
     m_spriteSheet = C2D_SpriteSheetLoad("romfs:/gfx/tiles.t3x");
     if (m_spriteSheet) {
-        // Sprite sheet loaded — retrieve individual images by index.
-        // These indices match the order sprites were packed by tex3ds.
         size_t count = C2D_SpriteSheetCount(m_spriteSheet);
         if (count >= 3) {
             m_imgGrass  = C2D_SpriteSheetGetImage(m_spriteSheet, 0);
@@ -87,7 +77,7 @@ bool Renderer::init() {
             m_useFallbackColors = false;
             LOG("Sprite sheet loaded (%zu sprites)", count);
         } else {
-            WARN("Sprite sheet has fewer than 3 sprites (%zu), using fallback colors", count);
+            WARN("Sprite sheet too small (%zu sprites), using fallback colors", count);
         }
     } else {
         WARN("tiles.t3x not found — using fallback colors");
@@ -99,32 +89,22 @@ bool Renderer::init() {
     return true;
 }
 
-void Renderer::beginFrame() {
+void Renderer::beginFrame(u32 bgColor) {
     C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-
-    // Clear top screen
-    C2D_TargetClear(m_topTarget, COLOR_CLEAR);
+    C2D_TargetClear(m_topTarget, bgColor);
     C2D_SceneBegin(m_topTarget);
 }
 
-void Renderer::drawColorRect(int sx, int sy, int w, int h, u32 color) const {
-    C2D_DrawRectSolid(
-        static_cast<float>(sx),
-        static_cast<float>(sy),
-        0.5f,
-        static_cast<float>(w),
-        static_cast<float>(h),
-        color);
+void Renderer::drawColorRect(float sx, float sy, float w, float h, u32 color) const {
+    C2D_DrawRectSolid(sx, sy, 0.5f, w, h, color);
 }
 
 void Renderer::drawTileMap(const TileMap& map, const Camera& cam) {
-    // Visible tile range
     int tx0 = cam.getX() / TILE_SIZE;
     int ty0 = cam.getY() / TILE_SIZE;
-    int tx1 = tx0 + (SCREEN_TOP_W / TILE_SIZE) + 1;
-    int ty1 = ty0 + (SCREEN_TOP_H / TILE_SIZE) + 1;
+    int tx1 = tx0 + (SCREEN_TOP_W / TILE_SIZE) + 2;
+    int ty1 = ty0 + (SCREEN_TOP_H / TILE_SIZE) + 2;
 
-    // Clamp to map bounds
     if (tx0 < 0) tx0 = 0;
     if (ty0 < 0) ty0 = 0;
     if (tx1 > map.getWidthTiles())  tx1 = map.getWidthTiles();
@@ -132,43 +112,46 @@ void Renderer::drawTileMap(const TileMap& map, const Camera& cam) {
 
     for (int ty = ty0; ty < ty1; ty++) {
         for (int tx = tx0; tx < tx1; tx++) {
-            int sx = tx * TILE_SIZE - cam.getX();
-            int sy = ty * TILE_SIZE - cam.getY();
-            u8  tile = map.getTile(tx, ty);
+            float sx = static_cast<float>(tx * TILE_SIZE - cam.getX());
+            float sy = static_cast<float>(ty * TILE_SIZE - cam.getY());
+            u8    tile = map.getTile(tx, ty);
 
             if (m_useFallbackColors) {
-                u32 color = (tile == TILE_WALL) ? COLOR_WALL : COLOR_GRASS;
-                drawColorRect(sx, sy, TILE_SIZE, TILE_SIZE, color);
+                drawColorRect(sx, sy, TILE_SIZE, TILE_SIZE, fallbackColorForTile(tile));
             } else {
-                C2D_Image& img = (tile == TILE_WALL) ? m_imgWall : m_imgGrass;
-                C2D_DrawImageAt(img,
-                                static_cast<float>(sx),
-                                static_cast<float>(sy),
-                                0.5f);
+                // With a real sprite sheet, select image by tile ID.
+                // For bootstrap art (only grass/wall/player), fall through to
+                // color for extended tile types.
+                if (tile == TILE_GRASS || tile == TILE_DIRT ||
+                    tile == TILE_FOREST_FLOOR || tile == TILE_STONE_FLOOR)
+                {
+                    C2D_DrawImageAt(m_imgGrass,
+                                    sx, sy, 0.5f);
+                } else if (tile >= TILE_FIRST_SOLID) {
+                    C2D_DrawImageAt(m_imgWall,
+                                    sx, sy, 0.5f);
+                } else {
+                    // Water and other special ground tiles — fallback color
+                    drawColorRect(sx, sy, TILE_SIZE, TILE_SIZE, fallbackColorForTile(tile));
+                }
             }
         }
     }
 }
 
 void Renderer::drawPlayer(float worldX, float worldY, const Camera& cam) {
-    int sx = cam.worldToScreenX(worldX);
-    int sy = cam.worldToScreenY(worldY);
+    float sx = static_cast<float>(cam.worldToScreenX(worldX));
+    float sy = static_cast<float>(cam.worldToScreenY(worldY));
 
     if (m_useFallbackColors) {
-        // 16x16 red square (player)
-        drawColorRect(sx, sy, 16, 16, COLOR_PLAYER);
-        // Small white dot in the center to indicate facing (cosmetic)
-        drawColorRect(sx + 6, sy + 6, 4, 4, COLOR_WHITE);
+        drawColorRect(sx, sy, 16, 16, C2D_Color32(200, 80, 80, 255));
+        drawColorRect(sx + 6, sy + 6, 4, 4, C2D_Color32(255, 255, 255, 255));
     } else {
-        C2D_DrawImageAt(m_imgPlayer,
-                        static_cast<float>(sx),
-                        static_cast<float>(sy),
-                        0.5f);
+        C2D_DrawImageAt(m_imgPlayer, sx, sy, 0.5f);
     }
 }
 
 void Renderer::drawFPS(float fps) {
-    // Render to top screen (we're already in the top screen scene)
     char buf[32];
     snprintf(buf, sizeof(buf), "FPS: %.1f", fps);
 
@@ -177,23 +160,60 @@ void Renderer::drawFPS(float fps) {
     C2D_TextParse(&text, m_textBuf, buf);
     C2D_TextOptimize(&text);
 
-    // Draw at top-left with a dark shadow for readability
     C2D_DrawText(&text, C2D_WithColor | C2D_AtBaseline,
-                 3.0f, 13.0f, 0.6f,    // x, y, z
-                 0.6f, 0.6f,            // scaleX, scaleY
+                 3.0f, 13.0f, 0.6f, 0.6f, 0.6f,
                  C2D_Color32(0, 0, 0, 180));
-
     C2D_DrawText(&text, C2D_WithColor | C2D_AtBaseline,
-                 2.0f, 12.0f, 0.7f,
-                 0.6f, 0.6f,
+                 2.0f, 12.0f, 0.7f, 0.6f, 0.6f,
                  C2D_Color32(255, 255, 80, 255));
 }
 
+void Renderer::drawFade(float alpha) {
+    if (alpha <= 0.0f) return;
+    u8 a = static_cast<u8>(std::min(alpha, 1.0f) * 255.0f);
+    drawColorRect(0.0f, 0.0f,
+                  static_cast<float>(SCREEN_TOP_W),
+                  static_cast<float>(SCREEN_TOP_H),
+                  C2D_Color32(0, 0, 0, a));
+}
+
+void Renderer::drawZoneName(const char* name, float alpha) {
+    if (alpha <= 0.0f || !name) return;
+
+    u8 a = static_cast<u8>(std::min(alpha, 1.0f) * 255.0f);
+
+    // Dark background banner
+    float bannerY = static_cast<float>(SCREEN_TOP_H) - 36.0f;
+    drawColorRect(0.0f, bannerY,
+                  static_cast<float>(SCREEN_TOP_W), 28.0f,
+                  C2D_Color32(0, 0, 0, static_cast<u8>(a * 0.7f)));
+
+    // Zone name text, centered
+    C2D_Text text;
+    // Use a fresh buffer section — FPS may have been drawn already this frame.
+    // TextBuf is cleared at the start of drawFPS; here we just append.
+    C2D_TextParse(&text, m_textBuf, name);
+    C2D_TextOptimize(&text);
+
+    // Measure width to center
+    float tw = 0.0f, th = 0.0f;
+    C2D_TextGetDimensions(&text, 0.7f, 0.7f, &tw, &th);
+
+    float tx = (static_cast<float>(SCREEN_TOP_W) - tw) * 0.5f;
+    float ty = bannerY + (28.0f + th) * 0.5f;
+
+    // Shadow
+    C2D_DrawText(&text, C2D_WithColor | C2D_AtBaseline,
+                 tx + 1.0f, ty + 1.0f, 0.7f, 0.7f, 0.7f,
+                 C2D_Color32(0, 0, 0, a));
+    // Main text
+    C2D_DrawText(&text, C2D_WithColor | C2D_AtBaseline,
+                 tx, ty, 0.8f, 0.7f, 0.7f,
+                 C2D_Color32(255, 230, 150, a));
+}
+
 void Renderer::endFrame() {
-    // Draw bottom screen (black for now)
     C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
     C2D_SceneBegin(m_botTarget);
-    // (bottom screen UI will be added in future milestones)
-
     C3D_FrameEnd(0);
 }

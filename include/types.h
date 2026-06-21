@@ -4,14 +4,19 @@
 // types.h
 // Shared primitive types and project-wide constants.
 // Include this in every header that needs basic types.
+//
+// Milestone 1 additions:
+//   - ZoneID enum
+//   - Extended tile IDs (forest, dungeon tiles)
+//   - MAX_ZONE_W / MAX_ZONE_H for variable-size maps
 //-----------------------------------------------------------------------------
 
-#include <3ds.h>      // u8, u16, u32, s8, s16, s32, etc. (from libctru)
+#include <3ds.h>
 #include <cstdint>
 #include <cmath>
 
 //-----------------------------------------------------------------------------
-// Screen dimensions (top screen)
+// Screen dimensions
 //-----------------------------------------------------------------------------
 static constexpr int SCREEN_TOP_W = 400;
 static constexpr int SCREEN_TOP_H = 240;
@@ -21,18 +26,44 @@ static constexpr int SCREEN_BOT_H = 240;
 //-----------------------------------------------------------------------------
 // Tile constants
 //-----------------------------------------------------------------------------
-static constexpr int TILE_SIZE     = 16;   // pixels per tile
-static constexpr int TILEMAP_W     = 25;   // map width  in tiles
-static constexpr int TILEMAP_H     = 20;   // map height in tiles
+static constexpr int TILE_SIZE  = 16;
+static constexpr int MAX_ZONE_W = 32;   // maximum map width  in tiles (any zone)
+static constexpr int MAX_ZONE_H = 24;   // maximum map height in tiles (any zone)
 
 //-----------------------------------------------------------------------------
-// Tile IDs used in map data
+// Tile IDs
+// 0–15 are passable ground tiles.
+// 16+ are solid wall/obstacle tiles.
+// The renderer uses these IDs to pick a fallback color or sprite index.
 //-----------------------------------------------------------------------------
-static constexpr u8 TILE_GRASS = 0;
-static constexpr u8 TILE_WALL  = 1;
+static constexpr u8 TILE_GRASS         = 0;   // town / open ground
+static constexpr u8 TILE_DIRT          = 1;   // path / worn ground
+static constexpr u8 TILE_FOREST_FLOOR  = 2;   // forest undergrowth
+static constexpr u8 TILE_STONE_FLOOR   = 3;   // dungeon floor
+static constexpr u8 TILE_WATER         = 4;   // impassable water (no wall sprite)
+
+static constexpr u8 TILE_WALL          = 16;  // generic solid wall
+static constexpr u8 TILE_TREE          = 17;  // forest tree (solid)
+static constexpr u8 TILE_STONE_WALL    = 18;  // dungeon stone wall
+static constexpr u8 TILE_FENCE         = 19;  // town fence (solid)
+
+// Solid test: any tile ID >= TILE_FIRST_SOLID is impassable.
+static constexpr u8 TILE_FIRST_SOLID   = 16;
 
 //-----------------------------------------------------------------------------
-// Simple 2D float vector
+// Zone identifiers
+//-----------------------------------------------------------------------------
+enum class ZoneID : u8 {
+    TOWN            = 0,
+    FOREST          = 1,
+    DUNGEON_ENTRANCE= 2,
+    COUNT           = 3
+};
+
+static constexpr u8 ZONE_COUNT = static_cast<u8>(ZoneID::COUNT);
+
+//-----------------------------------------------------------------------------
+// Vec2 — 2D float vector
 //-----------------------------------------------------------------------------
 struct Vec2 {
     float x;
@@ -58,7 +89,7 @@ struct Vec2 {
 };
 
 //-----------------------------------------------------------------------------
-// Simple integer rectangle (tile coordinates or pixel regions)
+// Rect — integer axis-aligned rectangle
 //-----------------------------------------------------------------------------
 struct Rect {
     int x, y, w, h;

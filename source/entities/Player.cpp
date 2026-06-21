@@ -1,5 +1,5 @@
 //-----------------------------------------------------------------------------
-// Player.cpp
+// Player.cpp  (Milestone 1)
 //-----------------------------------------------------------------------------
 
 #include "Player.h"
@@ -10,12 +10,12 @@ Player::Player(float startX, float startY)
 {}
 
 void Player::update(Vec2 axis, float dt, const TileMap& map) {
-    // Normalize the input axis so diagonal movement isn't faster.
-    Vec2 dir = axis.normalized();
-
-    // Scale by speed and delta time to get pixel displacement this frame.
+    Vec2 dir      = axis.normalized();
     Vec2 velocity = dir * (SPEED * dt);
+    m_pos         = Collision::resolve(map, m_pos, velocity, PLAYER_W, PLAYER_H);
+}
 
-    // Resolve collision and update position.
-    m_pos = Collision::resolve(map, m_pos, velocity, PLAYER_W, PLAYER_H);
+void Player::setPosition(float x, float y) {
+    m_pos.x = x;
+    m_pos.y = y;
 }

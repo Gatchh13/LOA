@@ -1,17 +1,31 @@
 #pragma once
 
 //-----------------------------------------------------------------------------
-// Renderer.h  (Milestone 1)
+// Renderer.h  (Milestone 2)
 //
-// New additions over bootstrap:
-//   - drawFade(alpha)       — full-screen black overlay for zone transitions
-//   - drawZoneName(name, alpha) — zone name banner on zone entry
-//   - drawTileMap uses per-zone bgColor for the screen clear
-//   - Extended fallback color table covers new tile IDs
+// Additions over Milestone 1:
+//   drawTint(color)         — colored overlay for day/night atmosphere
+//   drawNPCs(...)           — draws all active NPCs in current zone
+//   drawDialogue(npc)       — dialogue box on bottom screen
+//   drawClockDebug(...)     — HH:MM + phase string in debug area
+//
+// Render order (top screen):
+//   1. Tile map
+//   2. NPCs
+//   3. Player
+//   4. FPS + clock debug
+//   5. Day/night tint
+//   6. Zone transition fade
+//   7. Zone name banner
+//
+// Bottom screen:
+//   Dialogue box (when active), otherwise blank.
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
 #include "../world/TileMap.h"
+#include "../npc/NPC.h"
+#include "../npc/NPCManager.h"
 #include "Camera.h"
 
 #include <citro2d.h>
@@ -23,25 +37,35 @@ public:
 
     bool init();
 
-    // Call at the start of each frame. bgColor = current zone's background color.
+    // beginFrame clears the top screen with the zone's background color.
     void beginFrame(u32 bgColor);
 
-    // Draw all visible tiles in the map.
+    // Draw all visible tiles.
     void drawTileMap(const TileMap& map, const Camera& cam);
 
-    // Draw the player sprite at world position.
+    // Draw all active NPCs in the current zone.
+    void drawNPCs(const NPCManager& npcs, ZoneID currentZone, const Camera& cam);
+
+    // Draw the player sprite.
     void drawPlayer(float worldX, float worldY, const Camera& cam);
 
-    // Draw FPS counter (top-left of top screen).
-    void drawFPS(float fps);
+    // Draw FPS counter and world clock (HH:MM + phase) in debug area.
+    void drawClockDebug(float fps, int hour, int minute, const char* phase);
 
-    // Draw a full-screen black rectangle at the given alpha [0,1].
-    // Call after all world geometry and before endFrame.
+    // Draw day/night tint overlay. color.alpha drives intensity.
+    // Call after world geometry, before fade and UI.
+    void drawTint(u32 color);
+
+    // Draw full-screen black fade [0,1].
     void drawFade(float alpha);
 
-    // Draw the zone name banner centered near the bottom of the top screen.
-    // alpha [0,1] controls transparency.
+    // Draw zone name banner.
     void drawZoneName(const char* name, float alpha);
+
+    // Draw dialogue box on bottom screen.
+    // Call between beginFrame and endFrame.
+    // npc: the NPC currently speaking (must not be null).
+    void drawDialogue(const NPC* npc);
 
     void endFrame();
 
@@ -57,12 +81,14 @@ private:
     C2D_Image       m_imgWall;
     C2D_Image       m_imgPlayer;
 
+    // Larger text buffer: FPS(12) + clock(10) + phase(10) + zone name(24)
+    // + dialogue(80) + NPC names(20) + padding = 256 glyphs
     C2D_TextBuf m_textBuf;
 
     bool m_useFallbackColors;
+    bool m_dialogueDrawnThisFrame; // guards bottom screen draw
 
-    // Returns a fallback color for a given tile ID.
-    static u32 fallbackColorForTile(u8 tileId);
-
-    void drawColorRect(float sx, float sy, float w, float h, u32 color) const;
+    static u32  fallbackColorForTile(u8 tileId);
+    void        drawColorRect(float sx, float sy, float w, float h, u32 color) const;
+    void        drawNPCSprite(float sx, float sy) const;
 };

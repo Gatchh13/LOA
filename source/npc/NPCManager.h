@@ -25,6 +25,10 @@
 #include "NPC.h"
 #include "../world/TileMap.h"
 
+// Forward declaration — avoids circular include with QuestManager
+class QuestManager;
+class PlayerState;
+
 static constexpr int MAX_NPCS = 16;
 
 class NPCManager {
@@ -47,8 +51,11 @@ public:
     // Check if the player is close enough to any NPC and A is pressed.
     // playerX/Y: player center in pixels.
     // aPressed:  InputManager::isPressed(KEY_A).
+    // questMgr:  used to get dialogue overrides and notify of talk events.
+    // playerState: used by QuestManager to apply rewards on dialogue close.
     // Activates dialogue on the closest NPC within range.
-    void tryInteract(float playerX, float playerY, bool aPressed);
+    void tryInteract(float playerX, float playerY, bool aPressed,
+                     QuestManager& questMgr, PlayerState& playerState);
 
     // Close any open dialogue. Call when B is pressed or A is pressed again.
     void closeDialogue();

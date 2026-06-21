@@ -1,25 +1,24 @@
 #pragma once
 
 //-----------------------------------------------------------------------------
-// Renderer.h  (Milestone 2)
+// Renderer.h  (Milestone 3)
 //
-// Additions over Milestone 1:
-//   drawTint(color)         — colored overlay for day/night atmosphere
-//   drawNPCs(...)           — draws all active NPCs in current zone
-//   drawDialogue(npc)       — dialogue box on bottom screen
-//   drawClockDebug(...)     — HH:MM + phase string in debug area
+// Additions over Milestone 2:
+//   drawQuestMarker(...)    — pulsing diamond marker on the top screen
+//   drawQuestHUD(...)       — objective text on bottom screen (no dialogue)
 //
 // Render order (top screen):
 //   1. Tile map
 //   2. NPCs
-//   3. Player
-//   4. FPS + clock debug
-//   5. Day/night tint
-//   6. Zone transition fade
-//   7. Zone name banner
+//   3. Quest marker (if active in current zone)
+//   4. Player
+//   5. FPS + clock debug
+//   6. Day/night tint
+//   7. Zone transition fade
+//   8. Zone name banner
 //
 // Bottom screen:
-//   Dialogue box (when active), otherwise blank.
+//   Dialogue box (when active), otherwise quest HUD.
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
@@ -63,9 +62,18 @@ public:
     void drawZoneName(const char* name, float alpha);
 
     // Draw dialogue box on bottom screen.
-    // Call between beginFrame and endFrame.
     // npc: the NPC currently speaking (must not be null).
     void drawDialogue(const NPC* npc);
+
+    // Draw quest objective text and gold on bottom screen (no dialogue active).
+    // objectiveText: nullptr = show "No active quest".
+    void drawQuestHUD(const char* objectiveText, u32 gold);
+
+    // Draw a pulsing diamond marker at a world position.
+    // Used to show REACH_MARKER objective locations.
+    // timeAccum: running total real seconds (for pulse animation).
+    void drawQuestMarker(float worldX, float worldY,
+                         const Camera& cam, float timeAccum);
 
     void endFrame();
 

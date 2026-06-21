@@ -59,6 +59,7 @@ struct ScheduleEntry {
 //-----------------------------------------------------------------------------
 struct NPC {
     // Identity
+    u8    npc_id;                     // unique ID, matches target_npc_id in QuestStep
     char  name[MAX_NPC_NAME_LEN];
     char  dialogue[MAX_DIALOGUE_LEN];
     ZoneID home_zone;                 // zone where this NPC lives
@@ -75,6 +76,11 @@ struct NPC {
     float         target_y;
 
     // State flags
-    bool  dialogue_active;            // true while player is reading dialogue
-    bool  active;                     // false = this NPC slot is unused
+    bool        dialogue_active;            // true while player is reading dialogue
+    bool        active;                     // false = this NPC slot is unused
+
+    // Quest dialogue override — set by NPCManager when QuestManager provides
+    // context-sensitive text. nullptr = use normal dialogue field.
+    // Points to a string literal in QuestDef — never heap-allocated.
+    const char* dialogue_override;
 };

@@ -1,17 +1,19 @@
 //-----------------------------------------------------------------------------
-// main.cpp  (Milestone 2 — Living Town Prototype)
+// main.cpp  (Milestone 3 — Quest Framework)
 //
-// New over Milestone 1:
-//   - WorldClock   : in-game 24-hour time
-//   - DayNight     : time → tint color
-//   - NPCManager   : NPC state, schedules, movement, dialogue
+// New over Milestone 2:
+//   - QuestManager  : tracks quest state, objectives, rewards
+//   - PlayerState   : gold counter
+//   - Quest marker  : drawn in forest when REACH_MARKER step is active
+//   - Quest HUD     : objective text on bottom screen (when no dialogue)
+//   - timeAccum     : running real-time seconds for marker pulse animation
 //
 // Render order (top screen):
-//   tiles → NPCs → player → clock debug → day/night tint → fade → zone banner
+//   tiles → NPCs → quest marker → player → clock debug →
+//   day/night tint → fade → zone banner
 //
-// Input additions:
-//   A button : interact with NPC / close dialogue
-//   B button : close dialogue (alternate)
+// Bottom screen:
+//   dialogue (if open) OR quest HUD (always otherwise)
 //-----------------------------------------------------------------------------
 
 #include <3ds.h>
@@ -27,12 +29,14 @@
 #include "render/Renderer.h"
 #include "entities/Player.h"
 #include "npc/NPCManager.h"
+#include "quest/QuestManager.h"
+#include "quest/PlayerState.h"
 
 int main() {
     romfsInit();
 
     Logger::init();
-    LOG("Legends of Aetheria — Milestone 2: Living Town");
+    LOG("Legends of Aetheria — Milestone 3: Quest Framework");
 
     Renderer renderer;
     if (!renderer.init()) {
@@ -42,11 +46,11 @@ int main() {
     }
 
     Clock        clock;
-    WorldClock   worldClock(8 * 60);  // Start at 08:00
+    WorldClock   worldClock(8 * 60);   // Start at 08:00
     DayNight     dayNight;
     InputManager input;
 
-    // Zone setup — start in Town
+    // Zone setup
     ZoneManager zones;
     const ZoneDef&    startDef = getZoneDef(ZoneID::TOWN);
     const SpawnPoint& startSp  = startDef.spawns[0];
@@ -59,12 +63,18 @@ int main() {
                   zones.getTileMap().getWidthPixels(),
                   zones.getTileMap().getHeightPixels());
 
-    // NPC setup — init after world clock so NPCs snap to correct positions
+    // NPC + quest setup
+    PlayerState  playerState;
+    QuestManager questMgr;
+    questMgr.init();
+
     NPCManager npcs;
     npcs.init(worldClock.getTotalMinutes());
 
-    // Initial day/night state
     dayNight.update(worldClock.getTimeAsFloat());
+
+    // Running real-time accumulator for marker pulse animation
+    float timeAccum = 0.0f;
 
     LOG("World loaded — entering main loop");
 
@@ -87,20 +97,20 @@ int main() {
         //----------------------------------------------------------------------
         clock.tick();
         float dt = clock.getDelta();
+        timeAccum += dt;
 
-        // World clock always advances (even during fade)
         worldClock.update(dt);
         dayNight.update(worldClock.getTimeAsFloat());
 
-        // Determine current zone for NPC filtering
         ZoneID currentZone = zones.getCurrentZoneDef().id;
 
-        // Close dialogue with B
+        // B closes dialogue
         if (bPressed && npcs.isDialogueOpen()) {
+            // Must also notify quest manager that dialogue ended without advancing
+            // (B is an escape — no quest step progression)
             npcs.closeDialogue();
         }
 
-        // Player movement blocked during zone fade or open dialogue
         bool canMove = (zones.getFadeAlpha() < 1.0f) && !npcs.isDialogueOpen();
 
         if (canMove) {
@@ -108,18 +118,22 @@ int main() {
             player.update(axis, dt, zones.getTileMap());
         }
 
-        // NPC interaction (A button)
-        // tryInteract handles both open and close
-        npcs.tryInteract(player.getCenterX(), player.getCenterY(), aPressed);
+        // NPC interaction — passes QuestManager so tryInteract can get
+        // dialogue overrides and report talk events
+        npcs.tryInteract(player.getCenterX(), player.getCenterY(),
+                         aPressed, questMgr, playerState);
 
-        // NPC schedule + movement update
+        // Quest proximity checks (REACH_MARKER)
+        questMgr.update(currentZone, player.getCenterX(), player.getCenterY());
+
+        // NPC schedules and movement
         npcs.update(currentZone,
                     worldClock.getTotalMinutes(),
                     worldClock.hourJustChanged(),
                     zones.getTileMap(),
                     dt);
 
-        // Zone transitions (not while dialogue open)
+        // Zone transitions (suppressed during dialogue)
         if (!npcs.isDialogueOpen()) {
             zones.update(player.getCenterTileX(), player.getCenterTileY(), dt);
         }
@@ -139,36 +153,37 @@ int main() {
         //----------------------------------------------------------------------
         renderer.beginFrame(zones.getTileMap().getBgColor());
 
-        // World geometry
         renderer.drawTileMap(zones.getTileMap(), camera);
 
-        // NPCs (drawn before player so player appears on top)
         renderer.drawNPCs(npcs, currentZone, camera);
 
-        // Player
+        // Quest marker — shown when a REACH_MARKER objective is active here
+        if (questMgr.markerVisible(currentZone)) {
+            renderer.drawQuestMarker(questMgr.getMarkerX(), questMgr.getMarkerY(),
+                                     camera, timeAccum);
+        }
+
         renderer.drawPlayer(player.getX(), player.getY(), camera);
 
-        // HUD: FPS + clock
         renderer.drawClockDebug(clock.getFPS(),
                                 worldClock.getHour(),
                                 worldClock.getMinute(),
                                 dayNight.getPhaseName());
 
-        // Day/night tint (after world, before fade)
         renderer.drawTint(dayNight.getTintColor());
-
-        // Zone transition fade
         renderer.drawFade(zones.getFadeAlpha());
 
-        // Zone name banner (visible through fade-in)
         if (zones.showZoneName()) {
             renderer.drawZoneName(zones.getCurrentZoneDef().name,
                                   zones.getNameAlpha());
         }
 
-        // Dialogue box on bottom screen (if open)
+        // Bottom screen: dialogue if open, quest HUD otherwise
         if (npcs.isDialogueOpen()) {
             renderer.drawDialogue(npcs.getActiveDialogueNPC());
+        } else {
+            renderer.drawQuestHUD(questMgr.getActiveObjectiveText(),
+                                  playerState.gold);
         }
 
         renderer.endFrame();

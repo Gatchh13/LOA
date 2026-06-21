@@ -251,30 +251,23 @@ void Renderer::drawZoneName(const char* name, float alpha) {
 //-----------------------------------------------------------------------------
 // drawDialogue — drawn on the BOTTOM screen (320×240)
 //
-// Layout:
-//   Dark panel covering the top ~80px of the bottom screen.
-//   NPC name in bold yellow at top-left.
-//   Dialogue text in white below.
-//   "A: Close" hint at bottom-right.
-//
-// Switching to the bottom screen target happens here.
-// endFrame switches back implicitly (it clears/begins botTarget).
-// To avoid double-clearing, we track m_dialogueDrawnThisFrame.
+// Shows either the NPC's quest dialogue override (if set by QuestManager)
+// or their default dialogue string.
+// Newline (\n) in the dialogue string splits into two visual lines.
 //-----------------------------------------------------------------------------
 void Renderer::drawDialogue(const NPC* npc) {
     if (!npc) return;
 
-    // Switch to bottom screen
     C2D_SceneBegin(m_botTarget);
     C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
 
     // Dark dialogue panel
     drawColorRect(0.0f, 0.0f,
-                  static_cast<float>(SCREEN_BOT_W), 90.0f,
+                  static_cast<float>(SCREEN_BOT_W), 100.0f,
                   C2D_Color32(10, 10, 20, 230));
 
     // Border line
-    drawColorRect(0.0f, 88.0f,
+    drawColorRect(0.0f, 98.0f,
                   static_cast<float>(SCREEN_BOT_W), 2.0f,
                   C2D_Color32(100, 100, 160, 255));
 
@@ -286,31 +279,155 @@ void Renderer::drawDialogue(const NPC* npc) {
                  10.0f, 22.0f, 0.8f, 0.65f, 0.65f,
                  C2D_Color32(255, 220, 80, 255));
 
-    // Dialogue text (word-wrap not implemented — keep dialogue lines short)
-    C2D_Text dlgText;
-    C2D_TextParse(&dlgText, m_textBuf, npc->dialogue);
-    C2D_TextOptimize(&dlgText);
-    C2D_DrawText(&dlgText, C2D_WithColor | C2D_AtBaseline,
-                 10.0f, 52.0f, 0.7f, 0.55f, 0.55f,
+    // Choose text: quest override takes priority
+    const char* rawText = (npc->dialogue_override != nullptr)
+                          ? npc->dialogue_override
+                          : npc->dialogue;
+
+    // Split on \n into at most two lines
+    char line1[MAX_DIALOGUE_LEN] = {};
+    char line2[MAX_DIALOGUE_LEN] = {};
+    const char* nl = nullptr;
+    for (const char* p = rawText; *p; p++) {
+        if (*p == '\n') { nl = p; break; }
+    }
+    if (nl) {
+        int len1 = static_cast<int>(nl - rawText);
+        if (len1 >= MAX_DIALOGUE_LEN) len1 = MAX_DIALOGUE_LEN - 1;
+        strncpy(line1, rawText, static_cast<size_t>(len1));
+        line1[len1] = '\0';
+        strncpy(line2, nl + 1, MAX_DIALOGUE_LEN - 1);
+    } else {
+        strncpy(line1, rawText, MAX_DIALOGUE_LEN - 1);
+    }
+
+    C2D_Text t1, t2;
+    C2D_TextParse(&t1, m_textBuf, line1);
+    C2D_TextOptimize(&t1);
+    C2D_DrawText(&t1, C2D_WithColor | C2D_AtBaseline,
+                 10.0f, 50.0f, 0.7f, 0.55f, 0.55f,
                  C2D_Color32(230, 230, 230, 255));
+
+    if (line2[0] != '\0') {
+        C2D_Text t2text;
+        C2D_TextParse(&t2text, m_textBuf, line2);
+        C2D_TextOptimize(&t2text);
+        C2D_DrawText(&t2text, C2D_WithColor | C2D_AtBaseline,
+                     10.0f, 72.0f, 0.7f, 0.55f, 0.55f,
+                     C2D_Color32(200, 200, 200, 255));
+    }
+    (void)t2;
 
     // Close hint
     C2D_Text hintText;
     C2D_TextParse(&hintText, m_textBuf, "A: Close");
     C2D_TextOptimize(&hintText);
     C2D_DrawText(&hintText, C2D_WithColor | C2D_AtBaseline,
-                 260.0f, 82.0f, 0.6f, 0.5f, 0.5f,
+                 250.0f, 92.0f, 0.6f, 0.5f, 0.5f,
                  C2D_Color32(140, 140, 140, 255));
 
     m_dialogueDrawnThisFrame = true;
-
-    // Switch back to top screen for remaining draw calls
     C2D_SceneBegin(m_topTarget);
 }
 
 //-----------------------------------------------------------------------------
+// drawQuestHUD — bottom screen when no dialogue is open
+//
+// Layout:
+//   Top strip: quest title + objective text
+//   Bottom strip: gold counter
+//-----------------------------------------------------------------------------
+void Renderer::drawQuestHUD(const char* objectiveText, u32 gold) {
+    C2D_SceneBegin(m_botTarget);
+    C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
+
+    // Header bar
+    drawColorRect(0.0f, 0.0f,
+                  static_cast<float>(SCREEN_BOT_W), 18.0f,
+                  C2D_Color32(10, 10, 30, 220));
+
+    C2D_Text headerText;
+    C2D_TextParse(&headerText, m_textBuf, "QUEST");
+    C2D_TextOptimize(&headerText);
+    C2D_DrawText(&headerText, C2D_WithColor | C2D_AtBaseline,
+                 10.0f, 14.0f, 0.7f, 0.5f, 0.5f,
+                 C2D_Color32(180, 180, 220, 255));
+
+    // Objective text
+    if (objectiveText != nullptr) {
+        C2D_Text objText;
+        C2D_TextParse(&objText, m_textBuf, objectiveText);
+        C2D_TextOptimize(&objText);
+        C2D_DrawText(&objText, C2D_WithColor | C2D_AtBaseline,
+                     10.0f, 38.0f, 0.7f, 0.58f, 0.58f,
+                     C2D_Color32(255, 255, 180, 255));
+    } else {
+        C2D_Text noQuestText;
+        C2D_TextParse(&noQuestText, m_textBuf, "No active quest");
+        C2D_TextOptimize(&noQuestText);
+        C2D_DrawText(&noQuestText, C2D_WithColor | C2D_AtBaseline,
+                     10.0f, 38.0f, 0.7f, 0.55f, 0.55f,
+                     C2D_Color32(120, 120, 120, 255));
+    }
+
+    // Divider
+    drawColorRect(0.0f, 50.0f,
+                  static_cast<float>(SCREEN_BOT_W), 1.0f,
+                  C2D_Color32(60, 60, 80, 255));
+
+    // Gold counter
+    char goldBuf[32];
+    snprintf(goldBuf, sizeof(goldBuf), "Gold: %u", gold);
+    C2D_Text goldText;
+    C2D_TextParse(&goldText, m_textBuf, goldBuf);
+    C2D_TextOptimize(&goldText);
+    C2D_DrawText(&goldText, C2D_WithColor | C2D_AtBaseline,
+                 10.0f, 70.0f, 0.7f, 0.58f, 0.58f,
+                 C2D_Color32(255, 215, 80, 255));
+
+    m_dialogueDrawnThisFrame = true;
+    C2D_SceneBegin(m_topTarget);
+}
+
+//-----------------------------------------------------------------------------
+// drawQuestMarker
+// Draws a pulsing diamond (4 triangles) at the world position of a
+// REACH_MARKER objective. Pulses between full and half alpha on a 1-second
+// cycle so it's visible but not distracting.
+//
+// A diamond is drawn as four C2D_DrawTriangle calls sharing a center point.
+// citro2d doesn't have a built-in diamond primitive, so we use colored
+// rectangles rotated — simpler: just draw a small square rotated 45°.
+// Since citro2d doesn't support rotation, we approximate with a diamond
+// made from two overlapping rects.
+//-----------------------------------------------------------------------------
+void Renderer::drawQuestMarker(float worldX, float worldY,
+                               const Camera& cam, float timeAccum) {
+    float sx = worldX - static_cast<float>(cam.getX());
+    float sy = worldY - static_cast<float>(cam.getY());
+
+    // Cull if off screen
+    if (sx < -20.0f || sx > SCREEN_TOP_W + 20.0f) return;
+    if (sy < -20.0f || sy > SCREEN_TOP_H + 20.0f) return;
+
+    // Pulse: sin wave [0,1] at 1 Hz
+    float pulse = 0.5f + 0.5f * sinf(timeAccum * 6.283f);
+    u8    alpha = static_cast<u8>(140.0f + 115.0f * pulse);  // 140–255
+
+    u32 color      = C2D_Color32(255, 220, 50, alpha);
+    u32 colorInner = C2D_Color32(255, 255, 180, static_cast<u8>(alpha / 2));
+
+    // Diamond approximation: vertical + horizontal rect crossed at center
+    // Vertical bar (tall, narrow)
+    drawColorRect(sx - 2.0f, sy - 8.0f, 4.0f, 16.0f, color);
+    // Horizontal bar (short, wide)
+    drawColorRect(sx - 8.0f, sy - 2.0f, 16.0f, 4.0f, color);
+    // Inner dot
+    drawColorRect(sx - 2.0f, sy - 2.0f, 4.0f, 4.0f, colorInner);
+}
+
+//-----------------------------------------------------------------------------
 void Renderer::endFrame() {
-    // Draw bottom screen (if dialogue was already drawn, skip re-clearing)
     if (!m_dialogueDrawnThisFrame) {
         C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
         C2D_SceneBegin(m_botTarget);

@@ -1,3 +1,27 @@
+# Future Content Architecture Reference
+
+A design draft exists describing:
+
+- NPCDef
+- CreatureDef
+- LandmarkDef
+- AffinityProjectDef
+- FestivalDef
+- DeliveryDef
+- SkillDef
+- TitleDef
+
+These are FUTURE systems and are not required for the current save/load milestone.
+
+Use this document only as long-term guidance when designing save formats or manager interfaces.
+
+Current priority remains:
+
+1. Save/Load
+2. World persistence
+3. Affinity framework
+4. Delivery framework
+5. Content authoring systems
 # MILESTONE 6 - Future Systems Proposal
 
 Status: Design Proposal Only
@@ -308,8 +332,163 @@ struct CreatureDef {
 };
 ```
 
----
+### **1. CreatureDef** (supporting hybrids)
+
+```cpp
+enum class AnimalBase : uint8_t {
+    Badger,
+    Boar,
+    Goat,
+    Koi,
+    Stag,
+    Moth,
+    Hare,
+    Deer,
+    Turtle,
+    Crab,
+    Owl,
+    Fox,
+    Mole,
+    Bear,
+    Wolf,
+    // Add more as needed
+    Count
+};
+
+struct CreatureDef {
+    uint16_t id;
+    char name[16];
+
+    AnimalBase primarySpecies;
+    AnimalBase secondarySpecies;
+
+    Habitat habitat;
+    Temperament temperament;
+
+    uint16_t drops[4];          // Item IDs
+    uint16_t affinityImpact;    // Affinity points impact
+    uint8_t behaviorFlags;      // Behavior bits
+};
+```
 
 ---
 
-Would you like me to prepare a sample **content definition interface**, or a **template for data authoring**?
+### **2. NPCDef** (expandable for future)
+
+```cpp
+struct NPCDef {
+    uint16_t id;
+    char name[16];
+    Vec2 spawnPos;
+    uint16_t scheduleId;          // e.g., blacksmith, merchant
+    uint8_t defaultDialogueId;    // starting dialogue reference
+    // Future:
+    // uint8_t portraitId;
+    // Region homeRegion;
+    // uint8_t affinityTierRequirement;
+};
+```
+
+---
+
+### **3. LandmarkDef**
+
+```cpp
+struct LandmarkDef {
+    uint16_t id;
+    char name[16];
+    Region region;
+    Vec2 worldPos;
+};
+```
+
+---
+
+### **4. AffinityProjectDef** (corrected)
+
+```cpp
+// Represents a regional upgrade or construction project
+struct AffinityProjectDef {
+    uint16_t id;
+    char name[16];
+    uint8_t requiredTier;             // e.g., 1=Stranger, 2=Familiar, 3=Trusted, 4=HearthKin
+    uint16_t rewardItemId;            // Item rewarded upon completion
+    uint8_t associatedRegion;         // Region ID
+    uint8_t progress;                 // 0..255, serialized progress
+};
+```
+
+---
+
+### **5. FestivalDef** (with enum)
+
+```cpp
+enum class FestivalType : uint8_t {
+    HarvestFair,
+    Mosslights,
+    MoonTide,
+    LanternFestival,
+    // extend as needed
+};
+
+struct FestivalDef {
+    uint16_t id;
+    char name[16];
+    uint16_t dayOfYear;
+    uint8_t durationDays;
+    uint8_t region;
+    FestivalType festivalType;
+};
+```
+
+---
+
+### **6. DialogueDef** (externalized text reference)
+
+```cpp
+// Externalized dialogue text stored elsewhere; reference by ID
+struct DialogueRef {
+    uint16_t id;
+    uint16_t textId;             // External text storage ID
+    uint8_t nextDialogueId;      // optional branching
+    // optional flags for conditions
+};
+```
+
+*In-game, DialogueDef will be a collection of references, not full text.*
+
+---
+
+### **7. TitleDef** (with unlock condition)
+
+```cpp
+struct TitleDef {
+    uint16_t id;
+    char name[16];
+    uint8_t requiredTier;               // e.g., 4 for Tier 4 in all regions
+    uint16_t prerequisiteTitleId;      // optional prerequisite title
+    // Future conditions:
+    // uint8_t unlockFlag; // or a set of achievement flags
+};
+```
+
+---
+
+### **8. SettlementDef** (new, central to LOA)
+
+```cpp
+struct SettlementDef {
+    uint16_t id;
+    char name[16];
+
+    Region region;
+
+    uint16_t festivalId;                        // associated festival
+    uint16_t affinityProjectIds[8];             // linked projects
+    uint16_t mayorNpcId;                        // NPC representing settlement
+    // Optional: settlement-specific flags, resources, etc.
+};
+```
+
+---
+

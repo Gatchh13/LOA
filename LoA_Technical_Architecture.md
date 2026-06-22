@@ -245,10 +245,11 @@ struct SaveData {
     // Equipment (12 bytes) — 6 equipment slots × 2 bytes
     u16 equipped[6];
 
-    // Quest state (128 bytes) — bitfield for 30 quests × 4 states
+// Quest state (128 bytes) — bitfield for 30 quests × 4 states
     // Each quest: NOT_STARTED, IN_PROGRESS, COMPLETE, FAILED
     u8 quest_state[64];
-    u8 quest_flags[64];  // per-quest objective bits
+    u8 quest_flags[64];        // per-quest objective bits
+    u8 quest_acknowledged[4];  // NEW: 1 bit per quest (30 quests fits in 4 bytes)
 
     // World flags (64 bytes) — world event/legacy bitfield
     u8 world_flags[64];
@@ -547,16 +548,26 @@ struct QuestObjective {
     u8  flag_bit;  // which bit in quest_flags tracks this objective
 };
 
+struct QuestOutcome {
+    u8  required_flag_mask;     // which objective_flags bits trigger this outcome
+    u16 reward_item_id;
+    u8  reward_quantity;
+    u32 reward_gold;
+    u8  world_flag_bit;
+    s8  npc_relation_delta;     // reputation change with giver_npc_id
+    u8  affected_npc_count;     // 0-3 additional NPCs affected
+    u8  affected_npc_id[3];
+    s8  affected_npc_delta[3];
+};
+
 struct QuestDef {
     u16 quest_id;
     u8  giver_npc_id;
     u8  num_objectives;
     QuestObjective objectives[4];  // max 4 objectives per quest
-    u16 reward_item_id;
-    u8  reward_quantity;
-    u32 reward_gold;
+    u8  outcome_count;             // how many distinct resolutions (1-3)
+    QuestOutcome outcomes[3];
     u8  unlock_quest_id;    // quest unlocked on completion (0 = none)
-    u8  world_flag_bit;     // sets a world flag on completion
 };
 ```
 
@@ -573,6 +584,10 @@ public:
     void       onPickup(u16 item_id);       // called by inventory
     void       onTalkTo(u16 npc_id);        // called by dialogue
     void       checkAutoComplete(u8 quest_id);
+    u8         resolveOutcome(u8 quest_id) const;        // picks matching outcome index
+    void       applyOutcome(u8 quest_id, u8 outcome_idx); // grants rewards, sets flags, adjusts relations
+    bool       isAcknowledged(u8 quest_id) const;         // has NPC commented on completion yet
+    void       setAcknowledged(u8 quest_id);
 
 private:
     SaveData* save;  // direct reference — no copy

@@ -1,0 +1,124 @@
+
+## 1. Overview
+The Historical Records system tracks significant events, discoveries, and milestones in the game world. Records are created through specific triggers, stored efficiently, and displayed to players via various interfaces such as libraries, monuments, and player profiles. Designed to encourage long-term player legacy and world-building.
+
+---
+
+## 2. Data Schemas
+
+### JSON Schema for Records
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HistoricalRecord",
+  "type": "object",
+  "properties": {
+    "record_id": { "type": "string" },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "discovered_by": { "type": "string" },
+    "date_discovered": { "type": "string", "format": "date" },
+    "location": { "type": "string" },
+    "category": { "type": "string" }, // e.g., "milestone", "discovery", "battle"
+    "related_event": { "type": "string" }, // optional
+    "media": {
+      "type": "array",
+      "items": { "type": "string" } // URLs or resource IDs for images/media
+    }
+  },
+  "required": ["record_id", "title", "description", "discovered_by", "date_discovered"]
+}
+```
+
+### Validation Rules
+- `record_id`: unique string identifier.
+- `title`: non-empty.
+- `description`: detailed text.
+- `discovered_by`: player name or ID.
+- `date_discovered`: valid date string in ISO format.
+- `category`: optional but useful for filtering.
+- `media`: optional; can include images or video references.
+
+---
+
+## 3. Save Format (Binary + JSON Metadata)
+
+### Save File Structure (Binary + Metadata)
+- **Header**
+  - Version number (int)
+  - Total record count (int)
+  - Checksum (optional, for integrity)
+- **Records Block**
+  - Array of fixed-size record entries:
+    - `record_id`: fixed-length string (e.g., 32 bytes)
+    - `title`: fixed-length string (64 bytes)
+    - `discovered_by`: fixed-length string (32 bytes)
+    - `date_discovered`: 8 bytes (timestamp or ISO string)
+    - `location`: fixed-length string (32 bytes)
+    - `category`: fixed-length string (16 bytes)
+    - `media_count`: int
+    - `media_offsets`: array of offsets into media data block
+    - `description`: variable-length, stored separately or compressed
+- **Media Data Block**
+  - Raw media files or references stored separately; media offsets point here.
+
+### Serialization Implications
+- Use a fixed-size record for fast load/unload.
+- Store media as references (file paths, URLs) to avoid bloating save files.
+- Support partial loads (e.g., only recent records).
+
+---
+
+## 4. Event Triggers for Record Creation
+- **Discovery Trigger:** Player uncovers a new region, monument, or artifact.
+- **Milestone Trigger:** Player completes a major quest, defeats a boss, or builds a landmark.
+- **Player Action:** First time performing an action (e.g., first flight, first trade route).
+- **Time-based Trigger:** Certain dates or recurring festivals.
+- **NPC Trigger:** NPC recognizes player achievement or discovery.
+
+**Implementation Note:** These triggers instantiate a new record entry with relevant metadata, automatically or via player confirmation.
+
+---
+
+## 5. UI Screens
+
+### a) Records Library Screen
+- **Layout:** Scrollable list of records, filter by category, date, or region.
+- **Features:** Preview image/media, expandable description, related events.
+- **Interaction:** Click to view detailed record, share, or bookmark.
+
+### b) Monument and Landmark Display
+- **Layout:** 3D model or static image with overlay text.
+- **Features:** Show associated records, discovery date, and discoverer.
+- **Interaction:** Player can add plaques or inscriptions referencing the record.
+
+### c) Player Profile Profile
+- **Layout:** Achievements timeline, displaying key records.
+- **Features:** Search/filter, highlight milestones, and display related media.
+
+### d) In-Game Monument UI
+- **Layout:** Dedicated monument screens with embedded record info.
+- **Features:** Add new records via player actions, view historical summaries.
+
+---
+
+## 6. Memory Limits & Performance Considerations
+- **Cap on total records:** e.g., 10,000 entries to prevent memory bloat.
+- **Lazy loading:** Load record summaries initially; fetch full details on demand.
+- **Archiving:** Old records could be archived or pruned based on age or relevance.
+- **Media management:** Store media externally; keep in-memory references minimal.
+
+---
+
+## 7. Appearance in Libraries, Monuments, and Player Profiles
+
+- **Libraries:** Organized as chronological or categorical collections; searchable and filterable.
+- **Monuments:** Physical plaques or inscriptions referencing key records; clickable for details.
+- **Player Profiles:** Milestones like "First Dragon Kill," "First Guild," displayed as badges or timeline entries.
+
+---
+
+## 8. Summary
+This system encourages players to leave a lasting legacy, with a scalable, flexible architecture that supports rich media, filtering, and integration into various game features. It balances performance with detail, ensuring an engaging historical aspect that enhances immersion and world-building.
+

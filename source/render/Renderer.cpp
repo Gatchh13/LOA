@@ -3,6 +3,7 @@
 //-----------------------------------------------------------------------------
 
 #include "Renderer.h"
+#include "../world/WorldObject.h"
 #include "../core/Logger.h"
 
 #include <cstdio>
@@ -331,13 +332,106 @@ void Renderer::drawDialogue(const NPC* npc) {
 }
 
 //-----------------------------------------------------------------------------
-// drawQuestHUD — bottom screen when no dialogue is open
+// drawWorldObjects
+// Placeholder visuals for world objects. No sprites required.
 //
-// Layout:
-//   Top strip: quest title + objective text
-//   Bottom strip: gold counter
+// BRIDGE INACTIVE:   brown gap (two dark rects with a gap between)
+// BRIDGE REPAIRED:   solid brown crossing (filled rect)
+//
+// LADDER INACTIVE:   dark vertical line
+// LADDER REPAIRED:   brighter vertical band with horizontal rungs
+//
+// OBSTACLE INACTIVE: large dark green blocking rect
+// OBSTACLE REPAIRED: nothing drawn (cleared)
 //-----------------------------------------------------------------------------
-void Renderer::drawQuestHUD(const char* objectiveText, u32 gold) {
+void Renderer::drawWorldObjects(const WorldObject* objects, int count,
+                                ZoneID currentZone, const Camera& cam) {
+    for (int i = 0; i < count; i++) {
+        const WorldObject& obj = objects[i];
+        if (!obj.active)              continue;
+        if (obj.zone != currentZone)  continue;
+
+        // Position on screen: use the primary affected tile (tiles[0])
+        if (obj.tile_count == 0) continue;
+        float sx = obj.tiles[0].tx * TILE_SIZE - static_cast<float>(cam.getX());
+        float sy = obj.tiles[0].ty * TILE_SIZE - static_cast<float>(cam.getY());
+
+        // Cull off-screen
+        if (sx < -32.0f || sx > SCREEN_TOP_W + 32.0f) continue;
+        if (sy < -32.0f || sy > SCREEN_TOP_H + 32.0f) continue;
+
+        bool repaired = (obj.state == WorldObjectState::REPAIRED);
+
+        switch (obj.type) {
+            case WorldObjectType::BRIDGE: {
+                // Spans tile_count tiles horizontally
+                float w = static_cast<float>(obj.tile_count * TILE_SIZE);
+                if (repaired) {
+                    // Solid brown crossing
+                    drawColorRect(sx, sy, w, TILE_SIZE,
+                                  C2D_Color32(139, 90, 43, 255));
+                    // Plank lines
+                    for (int p = 0; p < obj.tile_count; p++) {
+                        drawColorRect(sx + p * TILE_SIZE + 1, sy + 4,
+                                      TILE_SIZE - 2, 2,
+                                      C2D_Color32(100, 60, 20, 200));
+                        drawColorRect(sx + p * TILE_SIZE + 1, sy + 10,
+                                      TILE_SIZE - 2, 2,
+                                      C2D_Color32(100, 60, 20, 200));
+                    }
+                } else {
+                    // Brown gap — show wall color with a dark gap
+                    drawColorRect(sx, sy, w, TILE_SIZE,
+                                  C2D_Color32(100, 80, 60, 255));
+                    drawColorRect(sx + 4, sy + 4, w - 8, TILE_SIZE - 8,
+                                  C2D_Color32(20, 10, 5, 255));
+                }
+                break;
+            }
+
+            case WorldObjectType::LADDER: {
+                // Spans tile_count tiles vertically
+                float h = static_cast<float>(obj.tile_count * TILE_SIZE);
+                if (repaired) {
+                    // Bright ladder — side rails + rungs
+                    drawColorRect(sx + 3, sy, 3, h,
+                                  C2D_Color32(180, 120, 60, 255));
+                    drawColorRect(sx + 10, sy, 3, h,
+                                  C2D_Color32(180, 120, 60, 255));
+                    for (int r = 0; r < obj.tile_count * 2; r++) {
+                        drawColorRect(sx + 3, sy + r * (TILE_SIZE / 2) + 6,
+                                      10, 2,
+                                      C2D_Color32(220, 160, 80, 255));
+                    }
+                } else {
+                    // Dark vertical line — coiled rope suggestion
+                    drawColorRect(sx + 6, sy, 4, h,
+                                  C2D_Color32(60, 40, 20, 255));
+                }
+                break;
+            }
+
+            case WorldObjectType::OBSTACLE: {
+                if (!repaired) {
+                    // Large dark green blocking rect across tile_count tiles vertically
+                    float h = static_cast<float>(obj.tile_count * TILE_SIZE);
+                    drawColorRect(sx, sy, TILE_SIZE, h,
+                                  C2D_Color32(40, 70, 20, 255));
+                    // Tree suggestion lines
+                    drawColorRect(sx + 6, sy, 4, h,
+                                  C2D_Color32(80, 50, 20, 255));
+                }
+                // REPAIRED = nothing drawn (cleared)
+                break;
+            }
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+// drawQuestHUD  (Milestone 4 — adds wood/rope resource display)
+//-----------------------------------------------------------------------------
+void Renderer::drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rope) {
     C2D_SceneBegin(m_botTarget);
     C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
 
@@ -353,7 +447,7 @@ void Renderer::drawQuestHUD(const char* objectiveText, u32 gold) {
                  10.0f, 14.0f, 0.7f, 0.5f, 0.5f,
                  C2D_Color32(180, 180, 220, 255));
 
-    // Objective text
+    // Objective
     if (objectiveText != nullptr) {
         C2D_Text objText;
         C2D_TextParse(&objText, m_textBuf, objectiveText);
@@ -362,10 +456,10 @@ void Renderer::drawQuestHUD(const char* objectiveText, u32 gold) {
                      10.0f, 38.0f, 0.7f, 0.58f, 0.58f,
                      C2D_Color32(255, 255, 180, 255));
     } else {
-        C2D_Text noQuestText;
-        C2D_TextParse(&noQuestText, m_textBuf, "No active quest");
-        C2D_TextOptimize(&noQuestText);
-        C2D_DrawText(&noQuestText, C2D_WithColor | C2D_AtBaseline,
+        C2D_Text noQText;
+        C2D_TextParse(&noQText, m_textBuf, "No active quest");
+        C2D_TextOptimize(&noQText);
+        C2D_DrawText(&noQText, C2D_WithColor | C2D_AtBaseline,
                      10.0f, 38.0f, 0.7f, 0.55f, 0.55f,
                      C2D_Color32(120, 120, 120, 255));
     }
@@ -375,15 +469,15 @@ void Renderer::drawQuestHUD(const char* objectiveText, u32 gold) {
                   static_cast<float>(SCREEN_BOT_W), 1.0f,
                   C2D_Color32(60, 60, 80, 255));
 
-    // Gold counter
-    char goldBuf[32];
-    snprintf(goldBuf, sizeof(goldBuf), "Gold: %u", gold);
-    C2D_Text goldText;
-    C2D_TextParse(&goldText, m_textBuf, goldBuf);
-    C2D_TextOptimize(&goldText);
-    C2D_DrawText(&goldText, C2D_WithColor | C2D_AtBaseline,
-                 10.0f, 70.0f, 0.7f, 0.58f, 0.58f,
-                 C2D_Color32(255, 215, 80, 255));
+    // Resources row: Gold  Wood  Rope
+    char resBuf[64];
+    snprintf(resBuf, sizeof(resBuf), "Gold:%u  Wood:%u  Rope:%u", gold, wood, rope);
+    C2D_Text resText;
+    C2D_TextParse(&resText, m_textBuf, resBuf);
+    C2D_TextOptimize(&resText);
+    C2D_DrawText(&resText, C2D_WithColor | C2D_AtBaseline,
+                 10.0f, 70.0f, 0.7f, 0.55f, 0.55f,
+                 C2D_Color32(220, 200, 120, 255));
 
     m_dialogueDrawnThisFrame = true;
     C2D_SceneBegin(m_topTarget);

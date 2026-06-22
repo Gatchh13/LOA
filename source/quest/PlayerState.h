@@ -1,25 +1,39 @@
 #pragma once
 
 //-----------------------------------------------------------------------------
-// PlayerState.h
-// Minimal persistent player data for Milestone 3.
+// PlayerState.h  (Milestone 4 — adds resources)
 //
-// Deliberately tiny. This is NOT the full save system (that comes later).
-// It holds only what the quest system needs right now: gold.
+// Additions:
+//   wood  — used to repair bridges and clear fallen trees
+//   rope  — used to lower ladders
 //
-// When the save system is built, this struct will be embedded inside
-// SaveData verbatim — no migration needed.
+// Test values: player starts with wood=20, rope=10.
+// These will be replaced by a gathering system in a future milestone.
 //
-// Memory: 8 bytes.
+// Save-friendly: struct embeds into SaveData verbatim. All fields are
+// plain integer types. No pointers. No dynamic allocation.
+//
+// Memory: 20 bytes.
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
 
 struct PlayerState {
-    u32 gold;       // current gold total
-    u32 reserved;   // pad to 8 bytes; available for future use
+    u32 gold;
+    u8  wood;
+    u8  rope;
+    u8  pad[2];   // align to 4 bytes
 
-    PlayerState() : gold(0), reserved(0) {}
+    PlayerState()
+        : gold(0)
+        , wood(20)   // test starting values
+        , rope(10)
+    {
+        pad[0] = 0;
+        pad[1] = 0;
+    }
 
-    void addGold(u32 amount) { gold += amount; }
+    void addGold(u32 amount)  { gold += amount; }
+    void addWood(u8  amount)  { wood = static_cast<u8>(wood + amount); }
+    void addRope(u8  amount)  { rope = static_cast<u8>(rope + amount); }
 };

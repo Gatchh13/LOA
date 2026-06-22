@@ -23,6 +23,7 @@
 
 #include "../../include/types.h"
 #include "../world/TileMap.h"
+#include "../world/WorldObject.h"
 #include "../npc/NPC.h"
 #include "../npc/NPCManager.h"
 #include "Camera.h"
@@ -65,9 +66,14 @@ public:
     // npc: the NPC currently speaking (must not be null).
     void drawDialogue(const NPC* npc);
 
-    // Draw quest objective text and gold on bottom screen (no dialogue active).
+    // Draw world objects (bridges, ladders, obstacles) in the current zone.
+    // objects/count from WorldObjectManager::getObjects() / getObjectCount().
+    void drawWorldObjects(const WorldObject* objects, int count,
+                          ZoneID currentZone, const Camera& cam);
+
+    // Draw quest objective text, gold, and resources on bottom screen.
     // objectiveText: nullptr = show "No active quest".
-    void drawQuestHUD(const char* objectiveText, u32 gold);
+    void drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rope);
 
     // Draw a pulsing diamond marker at a world position.
     // Used to show REACH_MARKER objective locations.

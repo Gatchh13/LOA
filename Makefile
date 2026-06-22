@@ -1,122 +1,140 @@
 #---------------------------------------------------------------------------------
-# Legends of Aetheria - Nintendo 3DS Makefile
-# Requires devkitARM + citro2d + citro3d (via devkitPro)
-#
-# Build:   make
-# Clean:   make clean
-# Install: make install  (copies .3dsx to SD card if DEVKITPRO_3DS is set)
+.SUFFIXES:
 #---------------------------------------------------------------------------------
 
-.SUFFIXES:
-
-ifeq ($(strip $(DEVKITPRO)),)
-$(error "DEVKITPRO not set. Source /etc/profile.d/devkit-env.sh or set DEVKITPRO=/opt/devkitpro")
+ifeq ($(strip $(DEVKITARM)),)
+$(error "Please set DEVKITARM in your environment. export DEVKITARM=<path to>devkitARM")
 endif
 
-TOPDIR        ?= $(CURDIR)
-
-include $(DEVKITPRO)/rules/3ds.mk
-
-#---------------------------------------------------------------------------------
-# Target
-#---------------------------------------------------------------------------------
-TARGET        := LegendsOfAetheria
-BUILD         := build
-SOURCES       := source \
-                 source/core \
-                 source/input \
-                 source/world \
-                 source/render \
-                 source/entities
-INCLUDES      := include
-DATA          :=
-GRAPHICS      :=
-ROMFS         := romfs
+TOPDIR ?= $(CURDIR)
+include $(DEVKITARM)/3ds_rules
 
 #---------------------------------------------------------------------------------
-# App metadata (shown on 3DS home screen / CIA title)
+# TARGET   : final output name (without extension)
+# BUILD    : directory where object files & intermediate files will be placed
+# SOURCES  : list of directories containing source code
+# DATA     : list of directories containing data files
+# INCLUDES : list of directories containing header files
+# ROMFS    : directory containing data to be added to RomFS
 #---------------------------------------------------------------------------------
-APP_TITLE     := Legends of Aetheria
-APP_DESCRIPTION:= Open World Fantasy RPG
-APP_AUTHOR    := Solo Developer
-ICON          := $(DEVKITPRO)/libctru/default_icon.png
-
-#---------------------------------------------------------------------------------
-# Compiler flags
-#---------------------------------------------------------------------------------
-ARCH          := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
-
-CFLAGS        := -g -Wall -Wextra -O2 -mword-relocations \
-                 -ffunction-sections -fdata-sections \
-                 $(ARCH) $(INCLUDE) -DARM11 -D_3DS
-
-CXXFLAGS      := $(CFLAGS) -std=c++17 -fno-rtti -fno-exceptions
-
-ASFLAGS       := -g $(ARCH)
-
-LDFLAGS       := -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+TARGET		:=	legends-of-aetheria
+BUILD		:=	build
+SOURCES		:=	source source/core source/render
+DATA		:=	data
+INCLUDES	:=	include
+ROMFS		:=	romfs
 
 #---------------------------------------------------------------------------------
-# Libraries
-# Order matters: citro2d before citro3d before ctru
+# options for code generation
 #---------------------------------------------------------------------------------
-LIBS          := -lcitro2d -lcitro3d -lctru -lm
+ARCH	:=	-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 
-LIBDIRS       := $(CTRULIB) $(DEVKITPRO)/portlibs/3ds
+CFLAGS	:=	-g -Wall -O2 -mword-relocations \
+			-fomit-frame-pointer -ffunction-sections \
+			$(ARCH)
+
+CFLAGS	+=	$(INCLUDE) -DARM11 -D_3DS
+
+CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17
+
+ASFLAGS	:=	-g $(ARCH)
+LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+
+LIBS	:= -lcitro2d -lcitro3d -lctru -lm
 
 #---------------------------------------------------------------------------------
-# Source file discovery (auto-finds all .cpp and .c in SOURCES dirs)
+# list of directories containing libraries, this must be the top level
+# containing include and lib
+#---------------------------------------------------------------------------------
+LIBDIRS	:= $(CTRULIB)
+
+#---------------------------------------------------------------------------------
+# no real need to edit anything past this point unless you need to add additional
+# rules for different file extensions
 #---------------------------------------------------------------------------------
 ifneq ($(BUILD),$(notdir $(CURDIR)))
+#---------------------------------------------------------------------------------
 
-export OUTPUT   := $(CURDIR)/$(TARGET)
-export TOPDIR   := $(CURDIR)
+export OUTPUT	:=	$(CURDIR)/$(TARGET)
+export TOPDIR	:=	$(CURDIR)
 
-export VPATH    := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
-                   $(foreach dir,$(DATA),$(CURDIR)/$(dir))
+export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
+					$(foreach dir,$(DATA),$(CURDIR)/$(dir))
 
-export DEPSDIR  := $(CURDIR)/$(BUILD)
+export DEPSDIR	:=	$(CURDIR)/$(BUILD)
 
-CFILES          := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(CURDIR)/$(dir)/*.c)))
-CPPFILES        := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(CURDIR)/$(dir)/*.cpp)))
+CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
+PICAFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.v.pica)))
+SHLISTFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.shlist)))
+GFXFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.t3s)))
 
-export LD       := $(CXX)
+#---------------------------------------------------------------------------------
+ifeq ($(strip $(CPPFILES)),)
+	export LD	:=	$(CC)
+else
+	export LD	:=	$(CXX)
+endif
 
-export OFILES_SOURCES := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o)
-export OFILES         := $(OFILES_SOURCES)
-export HFILES_BIN     :=
+export OFILES_BIN	:=	$(GFXFILES:.t3s=.t3x.o) $(addsuffix .o,$(PICAFILES)) \
+			$(SHLISTFILES:.shlist=.shbin.o)
 
-export INCLUDE  := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
-                   $(foreach dir,$(LIBDIRS),-I$(dir)/include) \
-                   -I$(CURDIR)/$(BUILD)
+export OFILES_SRC	:=	$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
+export OFILES 		:=	$(OFILES_BIN) $(OFILES_SRC)
+export HFILES_BIN	:=	$(addsuffix .h,$(subst .,_,$(OFILES_BIN)))
 
-export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
+export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
+					$(foreach dir,$(LIBDIRS),-I$(dir)/include) \
+					-I$(CURDIR)/$(BUILD)
 
-export _3DSXFLAGS += --romfs=$(CURDIR)/$(ROMFS)
+export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
-.PHONY: all clean install
+ifeq ($(strip $(ICON)),)
+	icons := $(wildcard *.png)
+	ifneq (,$(findstring icon.png,$(icons)))
+		export APP_ICON := $(TOPDIR)/icon.png
+	endif
+else
+	export APP_ICON := $(TOPDIR)/$(ICON)
+endif
 
+ifeq ($(strip $(NO_SMDH)),)
+	export _3DSXFLAGS += --smdh=$(CURDIR)/$(TARGET).smdh
+endif
+
+ifneq ($(ROMFS),)
+	export _3DSXFLAGS += --romfs=$(CURDIR)/$(ROMFS)
+endif
+
+.PHONY: $(BUILD) clean all
+
+#---------------------------------------------------------------------------------
 all: $(BUILD)
-	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 $(BUILD):
-	@mkdir -p $@
-
-clean:
-	@echo "Cleaning..."
-	@rm -rf $(BUILD) $(TARGET).3dsx $(TARGET).smdh $(TARGET).elf
-
-install: $(BUILD)
+	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
-	@echo "Copy $(TARGET).3dsx to your 3DS SD card: /3ds/$(TARGET)/"
 
+#---------------------------------------------------------------------------------
+clean:
+	@echo clean ...
+	@rm -fr $(BUILD) $(TARGET).3dsx $(OUTPUT).smdh $(TARGET).elf $(TARGET).cia
+
+#---------------------------------------------------------------------------------
 else
+.PHONY: all
 
-DEPENDS := $(OFILES:.o=.d)
+DEPENDS	:=	$(OFILES:.o=.d)
 
-$(OUTPUT).3dsx: $(OUTPUT).elf $(OUTPUT).smdh
+#---------------------------------------------------------------------------------
+all	:	$(OUTPUT).3dsx
 
-$(OUTPUT).elf: $(OFILES)
+$(OUTPUT).3dsx	:	$(OUTPUT).elf $(_3DSXDEPS)
+
+$(OUTPUT).elf	:	$(OFILES)
+
+$(OFILES_SRC)	: $(HFILES_BIN)
 
 -include $(DEPENDS)
 

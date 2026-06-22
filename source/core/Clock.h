@@ -1,34 +1,64 @@
 #pragma once
-
-//-----------------------------------------------------------------------------
-// Clock.h
-// Delta time and FPS counter.
-// Uses the 3DS CPU tick counter (svcGetSystemTick) for high-resolution timing.
-//-----------------------------------------------------------------------------
-
-#include "../../include/types.h"
+#include <3ds.h>
 
 class Clock {
 public:
-    Clock();
+    Clock()
+        : seconds_per_game_minute(2.0f),
+          accumulator(0.0f),
+          game_day(1),
+          hour(8),
+          minute(0),
+          hour_changed(false),
+          last_tick(0)
+    {
+        last_tick = svcGetSystemTick();
+    }
 
-    // Call once per frame at the top of the game loop.
-    // Updates delta time and FPS counter.
-    void tick();
+    // Call once per frame. Returns real delta time in seconds.
+    float update() {
+        u64 now = svcGetSystemTick();
+        u64 diff = now - last_tick;
+        last_tick = now;
 
-    // Seconds since last frame. Capped at 0.05 to avoid physics tunnelling
-    // on frame spikes (e.g. zone loads).
-    float getDelta() const { return m_delta; }
+        float dt = (float)diff / (float)SYSCLOCK_ARM11;
+        // Clamp to avoid huge dt spikes (e.g. first frame, or stall)
+        if (dt > 0.1f) dt = 0.1f;
 
-    // Smoothed frames per second (updated once per second).
-    float getFPS() const { return m_fps; }
+        tickGameTime(dt);
+        return dt;
+    }
+
+    u8   getHour() const   { return hour; }
+    u8   getMinute() const { return minute; }
+    u16  getDay() const    { return game_day; }
+    bool isNight() const   { return hour >= 20 || hour < 6; }
+    bool hourChanged() const { return hour_changed; }
 
 private:
-    static constexpr float MAX_DELTA = 0.05f;  // 20 fps floor for physics
+    void tickGameTime(float dt) {
+        hour_changed = false;
+        accumulator += dt / seconds_per_game_minute;
 
-    u64   m_lastTick;
-    float m_delta;
-    float m_fps;
-    float m_fpsAccum;
-    int   m_fpsFrames;
+        while (accumulator >= 1.0f) {
+            accumulator -= 1.0f;
+            minute++;
+            if (minute >= 60) {
+                minute = 0;
+                hour++;
+                hour_changed = true;
+                if (hour >= 24) {
+                    hour = 0;
+                    game_day++;
+                }
+            }
+        }
+    }
+
+    float seconds_per_game_minute; // 1 real second = (1 / this) game minutes
+    float accumulator;
+    u16   game_day;
+    u8    hour, minute;
+    bool  hour_changed;
+    u64   last_tick;
 };

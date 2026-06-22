@@ -1,108 +1,48 @@
 #pragma once
-
-//-----------------------------------------------------------------------------
-// Renderer.h  (Milestone 3)
-//
-// Additions over Milestone 2:
-//   drawQuestMarker(...)    — pulsing diamond marker on the top screen
-//   drawQuestHUD(...)       — objective text on bottom screen (no dialogue)
-//
-// Render order (top screen):
-//   1. Tile map
-//   2. NPCs
-//   3. Quest marker (if active in current zone)
-//   4. Player
-//   5. FPS + clock debug
-//   6. Day/night tint
-//   7. Zone transition fade
-//   8. Zone name banner
-//
-// Bottom screen:
-//   Dialogue box (when active), otherwise quest HUD.
-//-----------------------------------------------------------------------------
-
-#include "../../include/types.h"
-#include "../world/TileMap.h"
-#include "../world/WorldObject.h"
-#include "../npc/NPC.h"
-#include "../npc/NPCManager.h"
-#include "Camera.h"
-
 #include <citro2d.h>
 
 class Renderer {
 public:
-    Renderer();
-    ~Renderer();
+    bool init() {
+        gfxInitDefault();
+        C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
+        C2D_Init(C2D_DEFAULT_MAX_OBJECTS);
+        C2D_Prepare();
 
-    bool init();
+        top_screen = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
+        bottom_screen = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
-    // beginFrame clears the top screen with the zone's background color.
-    void beginFrame(u32 bgColor);
+        if (!top_screen || !bottom_screen) {
+            return false;
+        }
+        return true;
+    }
 
-    // Draw all visible tiles.
-    void drawTileMap(const TileMap& map, const Camera& cam);
+    void shutdown() {
+        C2D_Fini();
+        C3D_Fini();
+        gfxExit();
+    }
 
-    // Draw all active NPCs in the current zone.
-    void drawNPCs(const NPCManager& npcs, ZoneID currentZone, const Camera& cam);
+    void beginFrame() {
+        C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+    }
 
-    // Draw the player sprite.
-    void drawPlayer(float worldX, float worldY, const Camera& cam);
+    void beginTopScreen(u32 clear_color = 0x000000FF) {
+        C2D_TargetClear(top_screen, clear_color);
+        C2D_SceneBegin(top_screen);
+    }
 
-    // Draw FPS counter and world clock (HH:MM + phase) in debug area.
-    void drawClockDebug(float fps, int hour, int minute, const char* phase);
+    void beginBottomScreen(u32 clear_color = 0x000000FF) {
+        C2D_TargetClear(bottom_screen, clear_color);
+        C2D_SceneBegin(bottom_screen);
+    }
 
-    // Draw day/night tint overlay. color.alpha drives intensity.
-    // Call after world geometry, before fade and UI.
-    void drawTint(u32 color);
-
-    // Draw full-screen black fade [0,1].
-    void drawFade(float alpha);
-
-    // Draw zone name banner.
-    void drawZoneName(const char* name, float alpha);
-
-    // Draw dialogue box on bottom screen.
-    // npc: the NPC currently speaking (must not be null).
-    void drawDialogue(const NPC* npc);
-
-    // Draw world objects (bridges, ladders, obstacles) in the current zone.
-    // objects/count from WorldObjectManager::getObjects() / getObjectCount().
-    void drawWorldObjects(const WorldObject* objects, int count,
-                          ZoneID currentZone, const Camera& cam);
-
-    // Draw quest objective text, gold, and resources on bottom screen.
-    // objectiveText: nullptr = show "No active quest".
-    void drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rope);
-
-    // Draw a pulsing diamond marker at a world position.
-    // Used to show REACH_MARKER objective locations.
-    // timeAccum: running total real seconds (for pulse animation).
-    void drawQuestMarker(float worldX, float worldY,
-                         const Camera& cam, float timeAccum);
-
-    void endFrame();
-
-    bool isReady() const { return m_ready; }
+    void endFrame() {
+        C3D_FrameEnd(0);
+    }
 
 private:
-    bool              m_ready;
-    C3D_RenderTarget* m_topTarget;
-    C3D_RenderTarget* m_botTarget;
-
-    C2D_SpriteSheet m_spriteSheet;
-    C2D_Image       m_imgGrass;
-    C2D_Image       m_imgWall;
-    C2D_Image       m_imgPlayer;
-
-    // Larger text buffer: FPS(12) + clock(10) + phase(10) + zone name(24)
-    // + dialogue(80) + NPC names(20) + padding = 256 glyphs
-    C2D_TextBuf m_textBuf;
-
-    bool m_useFallbackColors;
-    bool m_dialogueDrawnThisFrame; // guards bottom screen draw
-
-    static u32  fallbackColorForTile(u8 tileId);
-    void        drawColorRect(float sx, float sy, float w, float h, u32 color) const;
-    void        drawNPCSprite(float sx, float sy) const;
+    C3D_RenderTarget* top_screen = nullptr;
+    C3D_RenderTarget* bottom_screen = nullptr;
 };

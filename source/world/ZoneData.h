@@ -24,6 +24,7 @@
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
+#include <citro2d.h>  // C2D_Color32() — used by zone bgColor definitions below
 
 //-----------------------------------------------------------------------------
 // TransitionDef

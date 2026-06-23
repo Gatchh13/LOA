@@ -48,3 +48,4 @@ Vec2 Collision::resolve(const TileMap& map,
 
     return resolved;
 }
+

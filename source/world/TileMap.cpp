@@ -3,6 +3,7 @@
 //-----------------------------------------------------------------------------
 
 #include "TileMap.h"
+#include <citro2d.h>  // C2D_Color32() — used for the default background color
 #include <cstring>
 
 TileMap::TileMap()
@@ -38,6 +39,15 @@ void TileMap::clearOverrides() {
 }
 
 void TileMap::setTileOverride(int tx, int ty, u8 tileId) {
+    // Reject coordinates outside the currently loaded zone. Without this
+    // check, an override meant for one zone's geometry (e.g. applied by
+    // WorldObjectManager for an object that belongs to a different zone)
+    // would silently land on whatever real tile happens to share that
+    // (tx,ty) in the zone that's actually loaded right now.
+    if (tx < 0 || ty < 0 || tx >= m_width || ty >= m_height) {
+        return;
+    }
+
     // Find existing entry for this coordinate and update it
     for (int i = 0; i < MAX_TILE_OVERRIDES; i++) {
         if (m_overrides[i].tile_id != 0xFF &&

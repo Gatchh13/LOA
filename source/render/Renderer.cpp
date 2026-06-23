@@ -557,3 +557,4 @@ void Renderer::drawStatusMessage(const char* text, float alpha) {
     }
     C3D_FrameEnd(0);
 }
+

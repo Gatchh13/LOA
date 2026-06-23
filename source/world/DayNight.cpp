@@ -3,6 +3,7 @@
 //-----------------------------------------------------------------------------
 
 #include "DayNight.h"
+#include <citro2d.h>  // C2D_Color32() — used by the tint color constants below
 #include <algorithm>
 #include <cmath>
 

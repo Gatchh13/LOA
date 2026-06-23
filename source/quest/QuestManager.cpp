@@ -25,8 +25,32 @@ void QuestManager::init() {
     // Auto-start the Missing Package quest so it's available immediately.
     // The first step is TALK_TO_NPC — the quest won't actually progress
     // until the player speaks to Mira, so this is just "available".
-    m_states[QUEST_MISSING_PACKAGE].status = QuestStatus::IN_PROGRESS;
+    bool started = startQuest(QUEST_MISSING_PACKAGE);
+    (void)started; // always true here: nothing else is IN_PROGRESS yet
     LOG("QuestManager: initialized. Missing Package quest available.");
+}
+
+bool QuestManager::startQuest(u8 quest_id) {
+    int active = findActiveQuest();
+    if (active >= 0 && active != static_cast<int>(quest_id)) {
+        // Another quest is already IN_PROGRESS. v1's design (HUD text,
+        // quest markers, NPC dialogue overrides) assumes exactly one active
+        // quest — findActiveQuest() only ever returns the first match, so
+        // silently allowing a second one here would mean the first quest's
+        // UI and dialogue hooks just stop updating with no error anywhere.
+        // Refuse instead of corrupting that assumption.
+        ERR("QuestManager::startQuest(%u) refused — quest %d is already "
+            "IN_PROGRESS and only one active quest is supported (see "
+            "findActiveQuest()). Complete or design multi-quest support "
+            "before adding a second concurrent quest.", quest_id, active);
+        return false;
+    }
+    if (quest_id >= MAX_QUESTS) return false;
+
+    m_states[quest_id].status             = QuestStatus::IN_PROGRESS;
+    m_states[quest_id].current_step       = 0;
+    m_states[quest_id].step_just_completed = false;
+    return true;
 }
 
 int QuestManager::findActiveQuest() const {
@@ -58,8 +82,12 @@ void QuestManager::update(ZoneID currentZone, float playerX, float playerY) {
 
         if (dist <= MARKER_RADIUS) {
             LOG("Quest %d step %d: REACH_MARKER met", qi, qs.current_step);
-            // Dummy PlayerState for marker step (no reward given mid-quest)
+            // Dummy PlayerState for marker step (no reward given mid-quest,
+            // but advanceStep() may call applyReward() if this happens to be
+            // the final step of some future quest — init() so that read
+            // is never against indeterminate memory).
             PlayerState dummy;
+            dummy.init();
             advanceStep(static_cast<u8>(qi), dummy);
         }
     }

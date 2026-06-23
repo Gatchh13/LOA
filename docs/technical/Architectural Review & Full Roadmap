@@ -1,0 +1,832 @@
+# Legends of Aetheria — Architectural Review & Full Roadmap
+**Document version:** 1.0  
+**Codebase baseline:** Milestone 5 (SaveData v5, 236-byte save file)  
+**Target hardware:** Nintendo 3DS Old model (ARM11 @ 268 MHz, ~64 MB RAM)  
+**Author role:** Principal Technical Architect
+
+---
+
+## Section 1 — Architectural Health Audit
+
+---
+
+### 1.1 QuestManager
+
+**Strengths**
+- Linear step model maps cleanly to LOA's quest design. TALK → REACH → RETURN is the right primitive.
+- All quest data is `const` in ROM. Zero heap at runtime. No JSON parsing, no file loading.
+- `onTalkToNPC()` / `onDialogueClosed()` event model correctly separates trigger detection from state advancement.
+- `static_assert`-style constraint: `MAX_QUESTS = 16` prevents silent overflow.
+
+**Weaknesses**
+- `findActiveQuest()` returns the *first* IN_PROGRESS quest. With two simultaneous IN_PROGRESS quests, only the earlier one receives proximity checks, NPC dialogue overrides, and HUD display. This is a silent bug masked by the current one-quest data set.
+- `QuestReward` only supports gold. Item rewards, skill XP, world-unlock flags, and reputation changes are not expressible in the current struct.
+- `QuestStep::npc_dialogue_override` is a single `const char*`. Multi-page dialogue for quest givers is impossible without architectural change.
+- The "quest is available" state is not modeled. There are only three states: NOT_STARTED, IN_PROGRESS, COMPLETE. There is no UNAVAILABLE, LOCKED, or FAILED state. When quest prerequisites are added (e.g., "complete quest A before quest B appears"), there is no state to encode that.
+
+**Scalability risks**
+- `MAX_QUESTS = 16` is fine for the demo. At 100 quests it becomes a bitfield management problem. The `quest_status` and `quest_current_step` arrays in SaveData are `u8[16]` — extending to 100 requires a save layout change.
+- All quest definitions are in a single `QuestDef.h`. At 30+ quests this file becomes unmaintainable. No per-file splitting mechanism exists.
+
+**Technical debt**
+- The `findActiveQuest()` single-quest assumption must be resolved before M7 adds a second quest. Either enforce one-at-a-time with a clear error, or redesign to support multiple active quests.
+- `QUEST_MISSING_PACKAGE = 0` is hardcoded as a literal. A central enum or namespace for all quest IDs should be established before IDs are scattered across files.
+
+**Practical limits**
+- Correct as designed for up to ~16 quests, 3 steps each, 1 active at a time. Beyond that, the system needs extension in three specific areas: state model, reward types, and storage.
+
+---
+
+### 1.2 ZoneManager
+
+**Strengths**
+- The fade state machine (NONE → FADE_OUT → LOADING → FADE_IN) is correct and complete. The `transitionReady()` / `commitTransition()` split correctly gives main.cpp control over player repositioning between phases.
+- Zone-name banner with smooth alpha is clean polish at minimal cost.
+- `onZoneLoaded()` in WorldObjectManager correctly re-applies tile overrides after every zone load, avoiding stale override state.
+
+**Weaknesses**
+- `ZoneManager` owns the TileMap directly. This means every zone load re-populates the same TileMap object. Any system that caches TileMap pointers will silently read stale data after a zone transition. `WorldObjectManager` takes `TileMap&` by reference, which is correct, but this is a fragile convention — not enforced by the type system.
+- There is no mechanism to play different music per zone. `loadZone()` has no audio callback or event notification.
+- `loadZone()` has no error handling. If `zone_id` is out of range (e.g., from a corrupted save), behavior is undefined.
+- Zone transitions are tile-coordinate-triggered (player center tile matches `trigger_tx/ty`). This creates a 16×16px activation zone — coarse for diagonal movement. A player moving diagonally through a corner trigger may activate it unexpectedly.
+
+**Scalability risks**
+- `ZoneData.h` is a single 254-line file for 3 zones. At 20 zones it will be ~1700 lines. At 50 zones (~full game) it becomes a maintenance problem: one misplaced comma corrupts the entire static data set.
+- All transition tile coordinates are hardcoded. If the Town map is ever resized (e.g., to add a northern district), all transition coordinates in `ZoneData.h` must be manually updated.
+- `ZONE_COUNT` is part of the `ZoneID` enum. Adding a zone requires modifying the enum, which changes `sizeof` implications in SaveData (`zone_id` is `u8`, fine), but any switch statement that handles zones without a `default:` branch will silently miss new zones until compiler warnings are examined.
+
+**Technical debt**
+- `getZoneDef(ZoneID)` accesses `s_zoneDefs[]` by enum cast without bounds checking. A zone_id of 200 (from a bad save) causes out-of-bounds array access. This must be guarded before save loading is in the hands of players.
+
+**Practical limits**
+- Correct as designed for up to ~20 zones before the single-file authoring problem becomes blocking. Zone transitions scale linearly — no performance concern. The tile data is the bottleneck: 32×24 max tiles × 3 layers would be ~2.3 KB per zone — comfortable at 20 zones (46 KB).
+
+---
+
+### 1.3 SaveData Architecture
+
+**Strengths**
+- `#pragma pack(1)` with `static_assert(sizeof(SaveData) == 236)` is the correct defense against silent layout changes.
+- CRC32 validation correctly rejects corrupted or version-mismatched saves without crashing.
+- Atomic write via temp file + rename prevents save file corruption on power-off mid-write.
+- Named reserved blocks for all 6 future systems is forward-looking and pays for itself immediately.
+- 236 bytes is extremely small. Even if it grows 10× it fits comfortably on a 3DS SD card.
+
+**Weaknesses**
+- `CHECKSUM_OFFSET = 14` is a magic number. It should be `offsetof(SaveData, zone_id)`. If header fields ever change order, this value silently becomes wrong and all saves are invalidated.
+- `PlayerState` has a constructor, making it non-trivially constructible. This is why `SaveData` mirrors PlayerState fields manually (`gold`, `wood`, `rope`) rather than embedding the struct. This creates a maintenance surface: if PlayerState grows, SaveData must be manually synchronized.
+- `reserved_inventory[64]` is the right size for 16 × 4-byte `ItemSlot` entries. However, there is no version-check for the point at which this block becomes `ItemSlot inventory[16]`. A developer can accidentally write to the reserved block with incompatible data and the save file will appear valid (correct CRC, correct version) while containing garbage inventory data.
+- Only one save slot. This is a stated design constraint, not a mistake, but it means players cannot experiment or maintain multiple characters. Consider whether this is the intended final design.
+
+**Scalability risks**
+- The `reserved_skills[32]` block supports 32 skills at 1 byte each. If the skill system uses u16 per skill (e.g., XP counts rather than levels), 16 skills fit. This needs to be decided before M9.
+- `reserved_reputation[16]` supports 16 faction values at 1 byte each (signed, -128 to +127) or 8 at 2 bytes. Faction count and resolution must be locked before M10.
+- If inventory grows beyond 16 slots, the reserved block is insufficient and the save layout must change. Lock the final inventory size before M7.
+
+**Technical debt**
+- The `CHECKSUM_OFFSET` magic number fix is a 1-line change. It should be made before M6 is started to prevent future confusion.
+- `PlayerState` should be made a pure POD struct (remove constructor, use an `init()` function) before M7 adds inventory. This allows `PlayerState` to be embedded directly in `SaveData` without mirroring.
+
+**Practical limits**
+- 236 bytes with 152 bytes reserved is highly sustainable through at least v10. The theoretical maximum for LOA's full system set (see Section 5) is ~800 bytes — still trivially small.
+
+---
+
+### 1.4 WorldObjectManager
+
+**Strengths**
+- The 16-entry `TileOverrideEntry` table is the right mechanism. Runtime tile modification without rebuilding the entire TileMap.
+- `broken_tile = 0xFF` sentinel correctly distinguishes "ZoneData already represents the broken state" from "we must add a blockage override." This is clean.
+- Object state is 1 byte per object, slot-indexed, trivially serializable.
+- The `onWorldObjectRepaired(id, questMgr*)` hook is the right pattern — establishes the interface even though QuestManager doesn't use it yet.
+
+**Weaknesses**
+- `setStatesFromSave()` calls `applyOverrides()` for *all* objects, regardless of which zone is currently loaded. Objects from Forest zone will attempt to write tile overrides into a Town TileMap. `setTileOverride()` does not bounds-check coordinates — it casts `tx/ty` directly to `u8` and stores them. If Forest tile (22, 11) happens to share coordinates with a Town tile, the Town tile is silently corrupted. **This is the highest-priority correctness bug in the codebase.**
+- `defineObjects()` is a static function inside `WorldObjectManager.cpp` that hardcodes all 3 objects. Adding a 4th object requires editing this function. There is no data-table pattern — it's imperative initialization code.
+- Object interaction range is a pixel-distance check against `interact_x/interact_y` (the center of the primary tile). For a 2-tile bridge, the interaction point is only the first tile's center. A player approaching from the second tile's side may be within visual range but outside interaction range.
+
+**Scalability risks**
+- `MAX_WORLD_OBJECTS = 16` means 16 objects globally. At 50 objects per zone × 20 zones, this becomes 1,000 objects — 62× the current limit. The current architecture cannot support this without a redesign. The fix is zone-local object arrays rather than a single global pool.
+- `MAX_TILE_OVERRIDES = 16` in TileMap. At 50 objects per zone with up to 4 tiles each, the maximum concurrent overrides would be 200 — 12× the limit. This is the second hard scaling ceiling.
+
+**Technical debt**
+- `setStatesFromSave()` must be fixed before any real players exist. The fix: remove `applyOverrides()` from `setStatesFromSave()`. The function should only set state values. The caller (`SaveManager::apply()`) must subsequently call `onZoneLoaded()` to apply the correct zone-specific overrides.
+- Object definitions should migrate to a data table pattern (same approach as `QuestDef.h`) before M8, when more objects will be added. An imperative `defineObjects()` function that initializes structs one field at a time is hard to read and error-prone.
+
+**Practical limits**
+- Correct for up to ~16 objects globally. For a full game with per-zone infrastructure, this requires a redesign to zone-local arrays with lazy loading. That redesign should happen at M8 or M9 at the latest, before content authors need more than 16 objects.
+
+---
+
+### 1.5 NPC Scheduling System
+
+**Strengths**
+- Hour-driven schedule evaluation (only fires 24 times per day) is efficiently correct. No per-frame schedule logic.
+- L-shaped pathfinding (horizontal then vertical) is reliable and sufficient for a tile-based town environment.
+- `snapToSchedule()` on zone entry correctly prevents NPCs from spawning at origin and walking across the map.
+- `MAX_SCHEDULE_ENTRIES = 8` per NPC is sufficient for a realistic daily routine.
+
+**Weaknesses**
+- NPCs use `pos_x / pos_y` float coordinates updated every frame, but movement is L-shaped and tile-aligned. This creates a subtle correctness risk: if `NPC_SPEED * dt` is smaller than the tile size, an NPC moving diagonally in L-shaped steps may oscillate between tiles without making progress, particularly at low frame rates.
+- NPCs have no concept of being blocked. If another NPC or the player occupies a tile the NPC needs to traverse, the NPC stops rather than waiting or rerouting.
+- All 50 NPCs (at full game scale) will be initialized and stored in memory regardless of which zone the player is in. With `MAX_NPCS = 16` and `sizeof(NPC) ≈ 200 bytes`, this is 3.2 KB — acceptable. But the update loop iterates all 16 slots every frame even for NPCs in other zones, checking `home_zone != currentZone` to skip. At 100 NPCs this becomes 20 KB of data with 100 skip-checks per frame.
+- NPC dialogue is a single `char dialogue[80]`. There is no multi-line, multi-page, or context-varying dialogue beyond the quest override. NPCs cannot have different dialogue at different times of day, or after specific world events.
+
+**Scalability risks**
+- The zone-filtering pattern (iterate all NPCs, skip wrong zone) scales as O(total NPCs) not O(NPCs in zone). At 100 NPCs, ~85 of them are skipped every frame — wasteful. Zone-bucketed NPC arrays would reduce this to O(NPCs in current zone).
+- `MAX_NPCS = 16` is too low for 100 NPCs. The constant needs to grow, but growing it increases the fixed memory footprint. At 100 NPCs × 200 bytes = 20 KB — acceptable on 3DS, but the design should be intentional.
+
+**Technical debt**
+- `npc_id` is `u8`. With 100 NPCs, IDs 0–99 fit comfortably. No issue.
+- `home_zone` is a `ZoneID`. NPCs that travel between zones (e.g., a merchant visiting different markets on different days) have no mechanism for multi-zone schedules. This is a future design constraint, not current technical debt.
+
+**Practical limits**
+- Correct for up to ~50 NPCs with the current zone-filtering design. Beyond 50, zone-bucketed storage becomes necessary.
+
+---
+
+### 1.6 Renderer
+
+**Strengths**
+- citro2d abstraction is clean. The renderer owns all GPU calls; no other system calls citro2d directly.
+- Fallback color rendering (when no `.t3x` exists) means the game runs correctly at all stages of development.
+- The `m_dialogueDrawnThisFrame` flag correctly prevents double-clearing the bottom screen when dialogue is drawn mid-frame.
+- Text buffer at 256 glyphs is adequate for all current text-drawing needs.
+
+**Weaknesses**
+- Tile rendering calls `C2D_DrawImageAt()` or `C2D_DrawRectSolid()` individually per tile. At 25×15 visible tiles × 3 layers = 1,125 draw calls per frame. citro2d batches same-texture calls, but this has never been profiled on Old 3DS hardware where the GPU budget is tight.
+- The renderer has no concept of render layers or draw order by depth. All entities are drawn in the order they are called from `main.cpp`. Z-sorting for Y-based depth (trees drawn over NPCs standing behind them) is not implemented.
+- `drawWorldObjects()` is entirely placeholder geometry. There is no sprite support for world objects — the function must be rewritten when assets arrive.
+- Text rendering reuses the same `m_textBuf` across `drawClockDebug()`, `drawZoneName()`, `drawStatusMessage()`, and `drawDialogue()`. If any two of these are called in the same frame without a buffer clear, glyphs accumulate. The current code manages this correctly but the pattern is fragile — a future developer could add a text draw call without clearing the buffer and cause a silent overflow.
+
+**Scalability risks**
+- 256-glyph text buffer is sufficient for current needs. An inventory screen with 16 item names (20 chars each = 320 chars) would overflow it. The buffer must grow before inventory UI is built.
+- No sprite animation system exists. The renderer currently draws static sprites. When player walk cycles and NPC animations are added, a per-entity animation state (current frame, frame timer, animation ID) must be maintained. This does not exist anywhere in the codebase.
+
+**Technical debt**
+- The `drawNPCSprite()` / `drawPlayer()` functions are hardcoded to draw colored rectangles. They must be redesigned to dispatch through a sprite sheet once assets exist. This is planned but not designed — the interface change (from "draw a rect" to "draw sprite index N from sheet") will require changes at every call site.
+
+**Practical limits**
+- Untested on Old 3DS hardware at 60 fps. The tile renderer's per-tile draw calls are the primary risk. A single `C2D_Flush()` at the end of the tile layer followed by a batch draw for entities would significantly reduce GPU command buffer pressure.
+
+---
+
+### 1.7 Input Layer
+
+**Strengths**
+- Clean abstraction: `isHeld()`, `isPressed()`, `getMovementAxis()` covers all current needs.
+- Circle Pad dead zone handling is correct (hardware raw values ~±154, dead zone 20).
+- Single `update()` call per frame pattern is correct — no missed input events.
+
+**Weaknesses**
+- No input buffering. Fast button presses (<1 frame duration) on Old 3DS at 60fps will be missed if `isPressed()` returns only on the frame the key transitions from released to held. In practice, `hidKeysDown()` holds the pressed state for exactly one frame — this is correct 3DS behavior, but worth documenting.
+- No rebinding. Not relevant for demo, but worth noting for future accessibility consideration.
+- `startPressed()` was repurposed for "load game" in M5. The original "quit" function is gone. There is no clean exit path for players. HOME button still works via `aptMainLoop()`, but there is no in-game quit option.
+
+**Scalability risks**
+- None significant. The input layer is appropriately thin. If a menu system with cursor navigation is added, a higher-level `MenuInput` wrapper (repeat delay, direction repeat rate) should be built on top of `InputManager` rather than modifying it.
+
+**Technical debt**
+- None. Input layer is clean.
+
+---
+
+### 1.8 Dialogue System
+
+**Strengths**
+- A-to-open, A-to-close is the simplest possible interaction model. Players intuitively understand it.
+- Quest dialogue override pattern is correct: `dialogue_override` is a pointer to a ROM string literal, not a heap allocation.
+- Bottom-screen dialogue panel keeps top screen world visible during conversation — good UX.
+
+**Weaknesses**
+- `char dialogue[80]` is the hardcoded maximum. An 80-character dialogue line is short for meaningful NPC characterization. A sentence like "The old bridge collapsed three winters ago — took my cart with it, and half my savings" is 86 characters. This will truncate.
+- The `\n` split in `drawDialogue()` supports exactly 2 lines. Three-line or scrollable dialogue is impossible without architectural change.
+- Dialogue is per-NPC, not per-conversation. An NPC cannot say different things on different days, in different quest states (beyond the single quest override), or after world events, without adding special-case logic to the NPC update code.
+- No "talking head" portrait exists. Character identity is conveyed only by name. This is a demo limitation that should be resolved before a public build.
+
+**Scalability risks**
+- A full dialogue tree system (branching, conditions, variables) is significantly more complex than the current flat model. Implementing it correctly for 3DS (no heap, no scripting engine) requires a bytecode approach or a static decision-tree struct. Neither exists. If branching dialogue is a design goal, this must be architected early — it touches quest integration, NPC state, and the renderer all at once.
+
+**Technical debt**
+- `MAX_DIALOGUE_LEN = 80` should be 128 to avoid truncation in practice. This is a 1-line change with no save compatibility impact.
+
+---
+
+### 1.9 Resource Systems (PlayerState)
+
+**Strengths**
+- `PlayerState` being a small struct passed by reference to all systems that need it is the right pattern. No global state, no singleton.
+- `gold`, `wood`, `rope` cover the three current resource types cleanly.
+
+**Weaknesses**
+- Resources are bare `u8` values (wood, rope) and `u32` (gold). There is no concept of resource categories, stack limits, or item-as-resource (e.g., "Rope" as a craftable item that happens to also be a resource). When inventory arrives, "wood" and "rope" should probably become item quantities in the inventory rather than separate fields.
+- The constructor sets `wood=20, rope=10` as test values. These must be removed before any real player testing. The planning document noted this; it has not yet been fixed.
+- There is no maximum resource cap. A player could theoretically accumulate `u8::max = 255` wood. Whether this is intended or an oversight should be decided before the gathering system is built.
+
+---
+
+## Section 2 — Scaling Analysis
+
+### Scenario: 20 zones, 100 NPCs, 100 quests, 500 items, 50 world objects per zone
+
+---
+
+### What fails first: WorldObjectManager
+
+**Current hard limit:** `MAX_WORLD_OBJECTS = 16` globally.  
+**Required at scale:** 50 objects/zone × 20 zones = 1,000 objects.  
+**Failure mode:** Objects beyond slot 16 are silently ignored.
+
+The global pool design is fundamentally incompatible with per-zone object counts at this scale. This is the first system to require redesign, and it should happen before content authoring requires more than 16 objects total.
+
+**Required redesign:** Zone-local object arrays. Each `ZoneDef` owns its world objects. Only the current zone's objects are loaded into a runtime pool. On zone transition, the pool is cleared and repopulated.
+
+---
+
+### What fails second: TileMap override layer
+
+**Current hard limit:** `MAX_TILE_OVERRIDES = 16`.  
+**Required at scale:** 50 objects × 4 tiles each = 200 concurrent overrides per zone.  
+**Failure mode:** `setTileOverride()` silently drops overrides when the table is full. Tiles appear wrong. Collision is incorrect.
+
+This is directly caused by the WorldObjectManager scaling problem — both must be redesigned together.
+
+---
+
+### What becomes unmaintainable: ZoneData.h
+
+**Current state:** 254 lines, 3 zones.  
+**At scale:** 20 zones × ~85 lines per zone = ~1,700 lines in a single file.  
+**Failure mode:** Not a crash — a maintenance problem. One misplaced brace or comma invalidates all zone data. Merge conflicts in a collaborative environment become frequent.
+
+**Required fix:** Split into per-zone files (`source/world/zones/zone_town.h`, etc.) with a master include.
+
+---
+
+### What becomes a performance risk: NPC update loop
+
+**Current design:** Iterate all `MAX_NPCS` slots, skip by `home_zone` check.  
+**At 100 NPCs:** 100 iterations per frame, ~85 skipped per frame.  
+**At 60 fps:** 6,000 unnecessary skip-checks per second.  
+**Assessment:** At 100 NPCs this is negligible — ARM11 can do thousands of simple comparisons per millisecond. However, if each NPC update includes a `moveNPC()` call with `sqrtf()` inside (it does), and zone filtering fails (e.g., a bug causes all NPCs to be considered in-zone), 100 `sqrtf()` calls per frame becomes a real performance hit.
+
+**Required fix:** Zone-bucketed NPC storage eliminates the skip overhead and the sqrtf risk simultaneously.
+
+---
+
+### What becomes a performance risk: Tile rendering
+
+**Current design:** Per-tile `C2D_DrawImageAt()` call, 25×15×3 = 1,125 calls per frame.  
+**At 20 zones:** No increase — rendering is per-frame, not per-zone.  
+**Risk:** citro2d batches same-texture draws. If a zone uses multiple tilesets (forest + dungeon tiles on one map), the batch breaks on every tileset switch. A map that alternates between two tilesets could produce 500+ batch breaks per frame.
+
+**Required fix:** Single tileset per zone (already the design intent). Or a tile atlas approach — all tilesets baked into one texture at boot.
+
+---
+
+### What requires a redesign: QuestManager for 100 quests
+
+**Current design:** `u8 quest_status[16]` and `u8 quest_current_step[16]` in SaveData.  
+**At 100 quests:** These arrays must be `[100]` — a save layout change.  
+**Side effects:** The `MAX_QUESTS = 16` constant must change, changing the SaveData `static_assert` target, the array sizes, and the save version.
+
+This is manageable but must be planned. `reserved_skills[32]` and other reserved blocks must not be consumed before this expansion is made, or the layout will require painful reshuffling.
+
+---
+
+### What becomes difficult to maintain: QuestDef.h for 100 quests
+
+**Current:** One header, one quest, ~60 lines of step data.  
+**At 100 quests:** ~6,000 lines of step data in a single header (or ~100 lines × 60 quests = still manageable if well-organized).  
+**Real concern:** Quest text (dialogue overrides, objective strings) is embedded as string literals. At 100 quests, string management becomes unwieldy. Missing null terminator, wrong pointer, or truncated string causes hard-to-debug rendering artifacts.
+
+---
+
+### What does not scale at all: SaveData reserved blocks for 500 items
+
+**Current:** `reserved_inventory[64]` supports 16 × 4-byte `ItemSlot` entries.  
+**For 500 items (definitions):** Item definitions live in ROM, not SaveData. Only the player's *owned* items are saved. If the player can hold 50 items, `ItemSlot inventory[50]` = 200 bytes — which does not fit in the 64-byte reserved block.
+
+This is the save compatibility forcing function for M7. The block must be sized correctly before M7 starts, or M7 will produce a save format that is immediately too small.
+
+---
+
+## Section 3 — Milestone Roadmap (M6–M15)
+
+**Design priorities:** (1) Polished demo, (2) Maintainable codebase, (3) No expensive rewrites.
+
+---
+
+### Milestone 6 — Foundation of Feel
+**Objective:** Replace placeholder art, add title screen, establish resource gathering. Remove test values.
+
+**Dependencies:** M5 complete.
+
+**Systems added:**
+- Title screen state (New Game / Continue / Credits skeleton)
+- Sprite animation state machine (per-entity: facing, frame, timer)
+- Gathering node system (resource nodes in Forest and Town surrounds)
+- `GameState` enum extracted to its own header
+
+**Systems modified:**
+- `PlayerState`: Remove test starting values (`wood=0`, `rope=0`)
+- `Renderer`: Sprite sheet dispatch for player and NPC, directional walk cycle
+- `ZoneData.h`: Add gather node coordinates for Forest
+- `main.cpp`: Title screen routing, GatherNodeManager update/render
+
+**Save compatibility impact:**
+- `SAVE_VERSION` → 6. Add `u8 gather_node_states[16]` inside `reserved_inventory` (first 16 bytes). Remaining 48 bytes preserved for inventory proper. Breaking change: M5 saves rejected, new game required. Acceptable — no real players yet.
+- Fix `CHECKSUM_OFFSET` to use `offsetof()`.
+
+**Implementation risk:** Medium. The sprite pipeline (`tex3ds` → `.t3x`) is the only novel technical risk. Validate on Azahar before committing to the asset format. Everything else is straightforward.
+
+**Estimated complexity:** Medium (3–4 weeks). Art creation is the real timeline driver.
+
+---
+
+### Milestone 7 — Closed Economy Loop
+**Objective:** Inventory, item definitions, shop, and a second quest. Gold must be spendable.
+
+**Dependencies:** M6 (sprite pipeline for item icons; title screen for new-game flow).
+
+**Systems added:**
+- `ItemDef` table (ROM-resident, 32 items sufficient for demo)
+- `Inventory` (16-slot fixed array, add/remove/has)
+- `ShopScreen` (bottom screen: NPC stock, player gold, buy confirmation)
+- Second quest: "The Broken Well" (uses WorldObject + gathered wood)
+- Quest reward: can grant item (add `item_id` + `item_quantity` to `QuestReward`)
+
+**Systems modified:**
+- `NPC.h`: Add `shop_id` field (u8, 0xFF = not a shopkeeper)
+- `NPCManager`: Check `shop_id` on A-press; route to ShopScreen
+- `QuestManager`: Handle `ITEM_REWARD` in `applyReward()`
+- `Renderer`: `drawInventory()` on bottom screen idle; `drawShopScreen()`
+
+**Save compatibility impact:**
+- `SAVE_VERSION` → 7. Replace `reserved_inventory[64]` with `ItemSlot inventory[16]` (4 bytes × 16 = 64). Size unchanged. `static_assert` still passes.
+- `PlayerState` constructor removed — made POD. Mirror fields removed from SaveData; `PlayerState` embedded directly. This changes the SaveData layout: the mirrored `gold`, `wood`, `rope` fields are replaced by a single `PlayerState player_state` embed. This is the right time to make this change.
+
+**Implementation risk:** Medium-High. Shop UI is new UI territory. Cap shop stock at 4 items for demo; no scrolling required. Inventory display is new bottom-screen state machine — must integrate with dialogue and quest HUD without conflicts.
+
+**Estimated complexity:** Medium-High (4–5 weeks).
+
+---
+
+### Milestone 8 — Demo Polish Pass
+**Objective:** Audio, minimap, blocked exits, quest completion fanfare. Make it handable to a player.
+
+**Dependencies:** M7 (inventory for "pick up item" SFX; shop for "purchase" SFX).
+
+**Systems added:**
+- `AudioManager` (`ndsp` wrapper: BGM streaming, SFX RAM-loaded)
+- `Minimap` (bottom screen overlay: 64×48 zone downsampling + player dot)
+- `BlockedExit` struct in `ZoneData.h` (message displayed when player reaches a sealed exit)
+- Quest completion fanfare (screen flash + SFX trigger on `questJustCompleted()`)
+- First-boot controls tutorial (one-time overlay, flag in SaveData)
+
+**Systems modified:**
+- `ZoneManager`: Fire `AudioManager::playBGM()` on zone load
+- `ZoneData.h`: Add `BlockedExit` entries for Dungeon Entrance south wall
+- `Renderer`: `drawMinimap()`, `drawQuestFanfare()`, `drawControlsTutorial()`
+- `SaveData`: Add `u8 first_boot_done` in `reserved_titles[8]`
+
+**Save compatibility impact:**
+- `SAVE_VERSION` stays at 7 (audio state not persisted). First-boot flag fits in existing `reserved_titles` block without a layout change.
+
+**Implementation risk:** Low–Medium. `ndsp` initialization order with `gfxInitDefault()` is a known dependency — must call after graphics. BGM streaming works via DSP callback; main loop is not modified. Minimap is arithmetic. Blocked exits are 2 hours of work.
+
+**Estimated complexity:** Low–Medium (2–3 weeks).
+
+**Demo milestone:** After M8, the game satisfies the vertical slice exit criteria defined in the planning document. This is the point at which a build is handed to external testers.
+
+---
+
+### Milestone 9 — WorldObject Architecture Upgrade
+**Objective:** Fix the `setStatesFromSave()` correctness bug. Migrate to zone-local object storage. Raise object limits. Move from imperative `defineObjects()` to data tables.
+
+**Dependencies:** M8 complete (post-demo; no rush).
+
+**Systems redesigned:**
+- `WorldObject.h`: Add `WorldObjectDef` (static ROM data) vs `WorldObjectInstance` (runtime state). Separate the definition from the instance.
+- `ZoneData.h`: Each `ZoneDef` gets a `const WorldObjectDef* objects` array + `object_count`. Objects are owned by their zone definition.
+- `WorldObjectManager`: Becomes a thin runtime manager. On `onZoneLoaded()`, it populates a local instance array from the zone's definition list. `MAX_WORLD_OBJECTS` becomes per-zone capacity (e.g., 32), not global.
+- `TileMap`: Raise `MAX_TILE_OVERRIDES` to 64.
+- `SaveData`: `world_object_states[16]` → flat index scheme must be reconsidered for zone-local objects. Options: (a) assign a globally-unique ID to each object at compile time and keep the flat array, (b) use a zone+local_id pair. Option (a) is simpler and should be used.
+
+**Save compatibility impact:**
+- `SAVE_VERSION` → 8. `world_object_states` array size increases to accommodate global object count. If total objects across all 20 zones average 10 = 200 objects total, this array needs 200 bytes. `reserved_crafting[16]` and `reserved_housing[16]` would need to be consumed. Evaluate and resize accordingly.
+
+**Implementation risk:** Medium. This is a focused redesign of one system. The interface to `main.cpp` and the renderer changes minimally.
+
+**Estimated complexity:** Medium (2–3 weeks).
+
+---
+
+### Milestone 10 — Combat Foundation
+**Objective:** Player can fight enemies. Enemies exist in Dungeon Entrance. Basic damage model.
+
+**Dependencies:** M9 (stable entity architecture). Sprite pipeline from M6.
+
+**Systems added:**
+- `Enemy` struct and `EnemyDef` table (ROM-resident)
+- `EnemyManager` (zone-local, similar pattern to NPC zone-local redesign)
+- Player attack hitbox (single-frame AABB in front of player based on facing)
+- Damage formula (simple: `max(1, atk - def/2)` ± variance)
+- Enemy AI state machine (IDLE → CHASE → ATTACK, distance-based)
+- Player HP (add to `PlayerState`)
+- Death / respawn (player returns to last zone entry with full HP)
+
+**Systems modified:**
+- `PlayerState`: Add `hp_current`, `hp_max`
+- `ZoneData.h`: Add enemy spawn data to Dungeon Entrance zone
+- `Renderer`: Enemy sprites, HP bar, damage numbers (floating text)
+- `SaveData`: `SAVE_VERSION` → 9. `hp_current` and `hp_max` added to player state embed.
+
+**Implementation risk:** High. Combat is the most complex system so far because it requires: collision between moving entities, frame-accurate hitbox activation, damage animation feedback, and balance. Limit scope aggressively: melee only, one attack animation, no combos, no blocking.
+
+**Estimated complexity:** High (5–7 weeks).
+
+---
+
+### Milestone 11 — Skills & Progression
+**Objective:** Using skills improves them. The world responds to player capability.
+
+**Dependencies:** M10 (combat provides skill gain events for combat skills; gathering from M6 provides gather skill events).
+
+**Systems added:**
+- `SkillTable` (ROM-resident): 16–32 skills, XP thresholds per level
+- Skill XP gain events (on: attack, gather, craft, repair, dialogue)
+- Skill level-up notification
+- Skill effect application (passive bonuses: move speed, damage, gather yield)
+
+**Systems modified:**
+- `PlayerState`: Add `u8 skill_levels[32]` (or XP values — decide before M11 starts)
+- `SaveData`: `reserved_skills[32]` → `u8 skill_xp[32]` or `u8 skill_levels[32]`. This is the reserved block for exactly this purpose. No layout change needed if 32 skills fit in 32 bytes.
+- Damage formula in combat: reads player skill level
+- Gather yield: reads gather skill level
+
+**Implementation risk:** Medium. Skills are additive passive bonuses — no new UI required for demo level (skill levels visible in a simple stat screen). The risk is scope creep: resist adding active skills, cooldowns, or ability trees until the passive system is proven.
+
+**Estimated complexity:** Medium (3–4 weeks).
+
+---
+
+### Milestone 12 — Reputation & Faction System
+**Objective:** NPCs and factions remember player actions. World responds to reputation.
+
+**Dependencies:** M11 (established progression foundation). M7 (economy — reputation affects prices).
+
+**Systems added:**
+- `FactionDef` table (ROM-resident, up to 8 factions for V1)
+- `ReputationManager` (thin: array of s8 values, one per faction)
+- Reputation gain/loss events (quest completion, NPC dialogue choices, combat outcomes)
+- NPC dialogue variants based on reputation range
+
+**Systems modified:**
+- `NPC.h`: Add `faction_id` field
+- `ShopSystem`: Apply reputation-based price multipliers
+- `QuestDef`: Add reputation reward to `QuestReward`
+- `SaveData`: `reserved_reputation[16]` → `s8 faction_rep[8]` + 8 bytes spare. No version bump if fits within reserved block.
+
+**Implementation risk:** Medium. The complexity is design, not implementation. What does "reputation" change concretely, and is that change visible to the player?
+
+**Estimated complexity:** Medium (3–4 weeks).
+
+---
+
+### Milestone 13 — Crafting System
+**Objective:** Players combine gathered materials to create items.
+
+**Dependencies:** M7 (inventory for crafted items), M11 (crafting skill).
+
+**Systems added:**
+- `RecipeDef` table (ROM-resident): input items + quantities → output item
+- Crafting screen UI (bottom screen: recipe list, material check, confirm)
+- Workbench world objects in appropriate zones (use existing WorldObject framework)
+
+**Systems modified:**
+- `Inventory`: Add `removeItems(recipe)` batch operation
+- `Renderer`: `drawCraftingScreen()`
+- `SaveData`: `reserved_crafting[16]` → `u8 recipe_unlock_flags[16]` (one bit per unlockable recipe, supporting up to 128 recipes). If recipe discovery is a mechanic, this is where it's tracked.
+
+**Implementation risk:** Low–Medium. Crafting is essentially: check inventory for inputs → remove inputs → add output. The UI is the complexity.
+
+**Estimated complexity:** Low–Medium (2–3 weeks).
+
+---
+
+### Milestone 14 — Player Legacy & World Records
+**Objective:** The world remembers achievements. First dragon defeated, legendary items crafted, rare discoveries — these become part of the world's history.
+
+**Dependencies:** M12 (reputation establishes player-world relationship model), M13 (crafting unlocks legendary items).
+
+**Systems added:**
+- `LegacyManager`: 64-bit flag field for world events + structured achievement records
+- Legacy display: visible records accessible from a "Legacy" menu
+- NPC reactions to legacy events ("I heard you slew the mountain wyvern")
+
+**Systems modified:**
+- `QuestManager`: Quest completion can set legacy flags
+- `WorldObjectManager`: Repaired infrastructure can set legacy flags
+- `SaveData`: `reserved_housing[16]` repurposed as legacy flags (128 bits = 128 distinct legacy events). Alternatively, a new dedicated block if housing system requires its own space.
+
+**Implementation risk:** Medium. The risk is design scope — legacy events must be decided upfront. Adding events retroactively is easy (set a bit flag); defining what events *matter* and building the narrative response infrastructure (NPC dialogue variants for each legacy event) is significant authoring work.
+
+**Estimated complexity:** Medium (3–4 weeks for system; significant authoring effort ongoing).
+
+---
+
+### Milestone 15 — Online Foundation (Feasibility Spike)
+**Objective:** Determine whether any form of asynchronous online functionality is viable on 3DS. Design and prototype — do not commit to implementation without validating feasibility.
+
+**Dependencies:** All previous milestones. Stable save system.
+
+**Scope of spike:**
+- 3DS network library investigation (`<3ds/services/ac.h>`, `SOC` service)
+- Latency measurement: 3DS → HTTP endpoint round trip time
+- Bandwidth measurement: typical save file size vs connection speed
+- Prototype: POST save data to a server; receive leaderboard data back
+- Decide: Is asynchronous-only (no real-time) online viable? What features does it enable?
+
+**Potential features if viable:**
+- Shared world records leaderboard ("first player on your friend list to slay the wyvern")
+- Discoverable legacy events ("players near you have found X")
+- Asynchronous message boards (leave notes in specific world locations)
+
+**Implementation risk:** Very High. 3DS network programming is poorly documented for homebrew. Latency is unpredictable. The `SOC` service requires explicit initialization and careful memory management. Real-time multiplayer is almost certainly infeasible; asynchronous features may be viable.
+
+**Recommendation:** Treat M15 as a spike, not a commitment. If the spike proves infeasible or too complex for a solo developer, drop it without affecting any other milestone.
+
+**Estimated complexity:** Unknown until spike complete.
+
+---
+
+## Section 4 — Content Authoring Pipeline
+
+### Current state
+
+All content is hardcoded C++ in header files:
+- `QuestDef.h`: Quest steps as `const QuestStep[]` arrays
+- `ZoneData.h`: Tile maps as `const u8[]` arrays
+- `NPCManager.cpp`: NPC definitions in `initBlacksmith()` etc. imperative functions
+- `WorldObjectManager.cpp`: Object definitions in `defineObjects()` imperative function
+
+### Should data remain hardcoded?
+
+**For the demo and through M10: Yes.** Hardcoded data in ROM is zero-overhead, zero-parsing, and provably correct at compile time. The `static_assert` on `SaveData` size is an example of how compile-time data verification is uniquely powerful. External files lose this.
+
+**After M10, for non-programmer content authoring: Partially.** The decision depends on who authors content. If it is always the solo developer writing C++, hardcoded data is fine at any scale. If the intent is to enable non-programmer content authoring (dialogue writers, level designers), a tool pipeline is needed.
+
+### Recommended approach for Nintendo 3DS
+
+The 3DS cannot run Lua, Python, or any scripting engine at acceptable performance. JSON parsing has real overhead. The correct approach is a **compiled data format**:
+
+1. **Author in CSV or a lightweight custom text format** (offline, on PC)
+2. **Compile to `.bin` files** via a tool (Python or C++ offline compiler)
+3. **Load `.bin` files from romfs at boot** into fixed-size ROM-resident arrays
+
+This is the same approach used by commercial 3DS games. The data format is designed first; authoring tools are written against it.
+
+**For quests:** A quest definition CSV with columns: `id, title, step_type, target_id, marker_x, marker_y, zone, objective_text, npc_dialogue`. Each row is one step. The offline compiler produces a `quests.bin` binary that maps directly onto `QuestDef` structs.
+
+**For zones:** The tile map compiler already exists in concept (`tools/` directory). The map data can be authored in Tiled (free, open source map editor), exported as JSON, and compiled to the `u8[]` format the engine expects. Tiled has 3DS-scale map support and is the standard tool for this use case.
+
+**For NPCs:** A CSV: `id, name, zone, dialogue, schedule_entries...`. Compiled to `npc_defs.bin`. The NPC initialization functions in `NPCManager.cpp` are replaced by a `loadFromBin()` call.
+
+**For items:** Same pattern — CSV → `.bin` → `ItemDef[]` table.
+
+**Timeline:** This migration should not happen before M9. The current hardcoded approach is correct for solo development through the demo. The migration to compiled data files is a dedicated milestone (could be a partial task within M9 or a standalone M9.5) that should happen before the full content authoring sprint begins.
+
+### What should never move to external files
+
+- Zone transition coordinates (too tightly coupled to tile maps — wrong value crashes the game)
+- TileOverride definitions for world objects (same reason)
+- Any data that requires a correctness guarantee at compile time
+
+These should remain as validated C++ constants even when other content moves to external files.
+
+---
+
+## Section 5 — Save System Evolution
+
+### SaveData v5 baseline (current)
+
+```
+Header:              14 bytes
+Player position:     10 bytes
+World clock:          4 bytes
+PlayerState mirror:   8 bytes  ← must become embedded struct in v7
+Quest states:        32 bytes
+World object states: 16 bytes
+reserved_inventory:  64 bytes
+reserved_skills:     32 bytes
+reserved_reputation: 16 bytes
+reserved_titles:      8 bytes
+reserved_crafting:   16 bytes
+reserved_housing:    16 bytes
+TOTAL:              236 bytes
+```
+
+### Planned evolution
+
+**v6 (M6 — Gathering):**
+- Consume first 16 bytes of `reserved_inventory` for `gather_node_states[16]`
+- Remaining `reserved_inventory[48]` preserved for v7
+- Fix `CHECKSUM_OFFSET` to use `offsetof()`
+- New size: 236 bytes (no change — internal reuse)
+
+**v7 (M7 — Inventory):**
+- Replace `reserved_inventory[48]` (remaining) with `ItemSlot inventory[12]` (48 bytes)
+- Convert `PlayerState` to POD; embed directly in SaveData (removes mirrored gold/wood/rope)
+- If `PlayerState` is exactly 8 bytes (gold u32 + wood u8 + rope u8 + pad u8[2]), embed is a drop-in replacement
+- New size: 236 bytes (no change)
+
+**v8 (M9 — WorldObject Redesign):**
+- If total world objects across all zones > 16, `world_object_states[16]` must grow
+- Consume bytes from `reserved_skills` or add a new fixed block
+- Recommend: plan for 64 world objects max → `world_object_states[64]` = 64 bytes
+- This requires `reserved_skills[32]` to be consumed (32 bytes) + 16 bytes from `reserved_reputation`
+- Alternatively, extend the struct: new size ~284 bytes. Still trivially small.
+
+**v9 (M10 — Combat):**
+- Add `hp_current u8`, `hp_max u8` to PlayerState embed
+- Add `u8 enemy_kill_counts[20]` (one per enemy type, for legacy/achievements)
+- Source: remaining bytes in `reserved_reputation` or struct extension
+- New size: ~306 bytes
+
+**v10 (M11 — Skills):**
+- Replace `reserved_skills[32]` with `u8 skill_xp[32]` (or `u8 skill_levels[32]`)
+- Exactly 32 bytes — the block is sized for exactly this purpose
+- No layout change needed if skills fit in 32 bytes
+- New size: ~306 bytes (unchanged)
+
+### When version bumps are necessary
+
+A version bump is required whenever:
+1. Any field changes size
+2. Any field changes offset
+3. Any reserved block is repurposed with incompatible semantics
+4. A new field is added that cannot fit in a reserved block
+
+A version bump is NOT required when:
+- A reserved block is given a type name without changing its bytes
+- The header is updated with a new `save_count` (this is just data, not layout)
+
+### How migration should work
+
+The current pattern (reject mismatched version, fall back to new game) is correct for development. For a released game, migration code should be added to `SaveManager::loadGame()`:
+
+```
+if (sd.version == SAVE_VERSION)   → load normally
+if (sd.version == SAVE_VERSION-1) → apply migration function, then load
+if (sd.version <  SAVE_VERSION-1) → too old, new game
+```
+
+Migration functions are small: they copy fields that exist in both versions and initialize new fields to defaults. They should be kept indefinitely in `SaveManager.cpp` — the migration chain from v5 to current should always be traversable.
+
+### Future mistakes that could corrupt save compatibility
+
+1. **Changing a field type without bumping version.** If `gold` changes from `u32` to `u64`, old saves read the wrong bytes for every subsequent field. The `static_assert` on size will catch this only if the struct grows — not if a field shrinks.
+
+2. **Reordering fields within a reserved block.** If `gather_node_states[16]` moves from bytes 0–15 of `reserved_inventory` to bytes 48–63, v6 and v7 saves are incompatible without a version bump.
+
+3. **Using `memset(0)` on new struct members without version bumping.** New fields zeroed by memset appear as valid initial state (usually correct) but will silently ignore migrated data from older saves.
+
+4. **Trusting `static_assert` alone.** The assert verifies total size but not field order or offset. Two fields of the same type can be silently swapped. Use `static_assert(offsetof(SaveData, field_name) == EXPECTED_OFFSET, ...)` for critical fields.
+
+---
+
+## Section 6 — High-Risk Unknowns
+
+Ranked by risk (highest first):
+
+### Risk 1: Old 3DS performance at 60 fps — CRITICAL
+
+**Unknown:** The tile renderer has never been profiled on actual Old 3DS hardware. 1,125 draw calls per frame for tiles alone, plus NPCs, world objects, text, and overlay effects could easily exceed the 16.6ms frame budget on Old 3DS's underpowered GPU.
+
+**Why it's critical:** If the Old 3DS cannot maintain 60 fps in Town, the entire performance architecture must be reconsidered. This would affect: tile batching strategy, entity count limits, shadow/overlay effects, and potentially the resolution of the screen clear approach.
+
+**Mitigation:** Profile on hardware at M6, immediately after sprites are added. Use citro3d's built-in GPU timing (`C3D_GetProcessingTime()`). If frame budget is exceeded, the tile rendering path must move to a pre-baked vertex buffer approach rather than per-tile draw calls.
+
+### Risk 2: Sprite pipeline unvalidated — HIGH
+
+**Unknown:** The `tex3ds` → `.t3x` → `C2D_SpriteSheetLoad()` pipeline exists in documentation but has not been exercised in this project. The exact `tex3ds` command-line arguments, the sprite sheet packing order, and the `C2D_SpriteSheetGetImage()` indexing behavior must be validated on hardware before art production begins.
+
+**Why it's high:** If the sprite pipeline has unexpected behavior (wrong packing order, unsupported color format, memory alignment issues), all art production after that point is wasted until the pipeline is corrected.
+
+**Mitigation:** Produce one real asset (player walk cycle, 8 frames) and validate end-to-end on Azahar and physical hardware before M6 is complete.
+
+### Risk 3: Audio pipeline complexity — HIGH
+
+**Unknown:** `ndsp` (Nintendo DSP service) for 3DS audio requires: `ndspInit()` called after `gfxInitDefault()`, a DSP binary loaded from `dspfirm.cdc` (not always present on all 3DS systems), BGM streaming via a double-buffer callback mechanism, and careful memory alignment for audio buffers.
+
+**Why it's high:** If `dspfirm.cdc` is not present on the player's 3DS (it is not always present on unmodified hardware), the audio system fails to initialize silently or crashes, depending on error handling. The workaround (graceful no-audio fallback) must be designed from the start.
+
+**Mitigation:** Implement `AudioManager` in M8 with explicit fallback: if `ndspInit()` fails, set a `m_available = false` flag and skip all audio calls. Never crash on missing audio.
+
+### Risk 4: Memory budget — HIGH
+
+**Unknown:** The game has never measured its actual RAM footprint. The theoretical budget at scale (100 NPCs × 200 bytes = 20 KB, plus tile data, sprite sheets, audio buffers, stack) has never been validated against the 64 MB (Old 3DS) limit.
+
+**Key allocations to track:**
+- Sprite sheets in VRAM: ~128 KB peak (two sheets loaded simultaneously)
+- BGM streaming buffer: ~4–8 MB (the largest single allocation)
+- NPC array: ~20 KB at 100 NPCs
+- Game code + stack: ~4–8 MB
+- OS overhead on Old 3DS: ~16 MB reserved
+
+**Assessment:** The BGM streaming buffer is the most dangerous allocation — it's the largest and allocated at boot. If the DSP streaming buffer requires 8 MB, plus OS overhead (16 MB) and game code (~8 MB), the remaining margin for game data on Old 3DS (~64 MB total) is approximately 32 MB. That's comfortable for the game data but leaves no margin for errors in the BGM allocation size estimate.
+
+**Mitigation:** Measure total heap usage at M8 after audio is added. `mallinfo()` is available on devkitPro. Set an explicit 40 MB cap and assert against it at boot.
+
+### Risk 5: WorldObjectManager correctness bug — MEDIUM
+
+Already identified in Section 1.4. `setStatesFromSave()` applies tile overrides for all zones regardless of which zone is loaded. This is a latent bug with deterministic failure conditions (load save while in Forest; Forest objects corrupt Town tiles on next Town entry).
+
+**Mitigation:** Fix before M6. One afternoon's work.
+
+### Risk 6: Content volume for demo — MEDIUM
+
+**Unknown:** Producing 3 zones, 3+ NPCs with distinct sprites, 2 quests, 5+ world objects, 8 items, and BGM/SFX as a solo developer is a significant content authoring burden. Art, writing, and balance testing all compete with programming time.
+
+**Mitigation:** Set hard content caps. Demo scope from the planning document is the ceiling. Do not expand content during M6–M8.
+
+### Risk 7: Save versioning discipline — LOW (now), HIGH (later)
+
+The current single developer maintains perfect version discipline. With any contribution from additional developers (or after a long break), version bump discipline degrades. A save file with the wrong `static_assert` value that still compiles because a reserved block was internally repurposed will produce valid-CRC corrupt data.
+
+**Mitigation:** Add an `offsetof` assert for every critical field before M7. Document the save layout change process explicitly in `SaveData.h`.
+
+### Risk 8: Zone data correctness — LOW
+
+Tile coordinate errors in `ZoneData.h` (wrong transition trigger, wrong spawn point) are hard to detect because they produce no compile error and may produce subtle gameplay bugs (player spawns inside a wall, transition fires in wrong location) rather than crashes.
+
+**Mitigation:** The Python audit scripts written during development should be committed to the repository as `tools/validate_zones.py` and run as a pre-commit check. They already exist in the session history.
+
+---
+
+## Section 7 — Critical Recommendations
+
+These 10 recommendations are ordered by urgency. Items 1–4 should be addressed before M6 begins. Items 5–7 before M7. Items 8–10 before M10.
+
+---
+
+**Recommendation 1: Fix `setStatesFromSave()` before any more milestones.**
+
+The WorldObjectManager applies tile overrides for all zones when restoring from save, regardless of which zone is loaded. This is a correctness bug with deterministic failure conditions. The fix is one afternoon: `setStatesFromSave()` sets state values only; the caller calls `onZoneLoaded()` to apply zone-correct overrides. Do this now before the bug is discovered during playtesting.
+
+---
+
+**Recommendation 2: Change `CHECKSUM_OFFSET = 14` to `offsetof(SaveData, zone_id)`.**
+
+A magic number in the save system CRC calculation is a liability. If the header ever changes — even adding a `u8 flags` field — the checksum covers the wrong bytes and all saves silently become invalid. One line of change. Do it now.
+
+---
+
+**Recommendation 3: Remove the `PlayerState` constructor and make it POD.**
+
+The mirroring of `gold`, `wood`, `rope` between `PlayerState` and `SaveData` is a maintenance surface that will cause a bug when these structs diverge. Making `PlayerState` a pure POD struct (no constructor; initialization via `PlayerState::init()` free function) allows direct embedding in `SaveData` and eliminates the mirror permanently.
+
+---
+
+**Recommendation 4: Validate the sprite pipeline end-to-end on hardware at the very start of M6.**
+
+Before any art production begins, produce one real asset, pack it with `tex3ds`, load it with `C2D_SpriteSheetLoad()`, and confirm it renders correctly on Azahar and a physical 3DS. If the pipeline has issues, they are discovered before any art work is done. If the pipeline is validated, art production can proceed with confidence.
+
+---
+
+**Recommendation 5: Decide on inventory slot count before M7 starts, and commit it to SaveData.**
+
+The `reserved_inventory[64]` block supports 16 × 4-byte `ItemSlot` entries. If the inventory design calls for 32 or 64 slots, this block is too small and the save layout must be extended before M7 begins. Making this decision retroactively after M7's save format is in use by real players is a painful migration. Lock it now: how many items can the player carry at once?
+
+---
+
+**Recommendation 6: Establish a formal quest ID registry before M7 adds a second quest.**
+
+Currently `QUEST_MISSING_PACKAGE = 0` is defined in `QuestDef.h`. When a second quest is added, its ID must be defined consistently across `QuestDef.h`, `SaveData` array indices, and any quest-checking code in `QuestManager`. Create a `QuestID` enum in a dedicated header before the second quest exists. This prevents ID collisions and makes it obvious when a quest is referenced by ID in quest-checking code.
+
+---
+
+**Recommendation 7: Enforce one-active-quest-at-a-time policy explicitly before M7.**
+
+`findActiveQuest()` returns the first `IN_PROGRESS` quest. With two simultaneous `IN_PROGRESS` quests, only one gets proximity checks and NPC overrides. Before M7 adds a second quest, add a guard in `QuestManager::startQuest()` (or equivalent) that either refuses a second active quest or explicitly defines the multi-active behavior. The implicit behavior is a bug waiting to manifest.
+
+---
+
+**Recommendation 8: Profile on Old 3DS hardware at M6 completion, before building more content.**
+
+If the tile renderer cannot maintain 60 fps on Old 3DS with one zone and three NPCs, no amount of optimization later will fix a fundamentally batch-unfriendly draw architecture. Profile at M6 when the visual system is first complete. If frame budget is exceeded, fix the tile renderer immediately — before 20 zones and 100 NPCs make the problem intractable.
+
+---
+
+**Recommendation 9: Split ZoneData.h into per-zone files before M9.**
+
+At 3 zones, a single `ZoneData.h` is manageable. At 20 zones it is not. The split is a zero-logic refactor: create `source/world/zones/zone_town.h`, `zone_forest.h`, etc., with a master `ZoneData.h` that includes them. Do this before the content authoring sprint adds zones in volume. The longer this is delayed, the more expensive the refactor becomes (more include paths to update, more files that include `ZoneData.h` directly).
+
+---
+
+**Recommendation 10: Treat Milestone 15 (online) as a feasibility spike, not a commitment.**
+
+3DS online homebrew is technically possible but practically complex: `SOC` service initialization, SSL certificate handling (or no HTTPS), latency unpredictability, and the real risk that Nintendo's infrastructure changes make the connection path unreliable. Before any design work for online features is done, run a 1-week spike: can a 3DS homebrew app POST a JSON payload to a server and receive a response reliably? If yes, proceed. If no, remove online from the roadmap and do not let its ghost drive architectural decisions (such as keeping save data unusually small "for sync purposes" or avoiding local-only optimizations).
+
+The game is fully complete without online features. Do not let speculative online design constrain the systems that ship.

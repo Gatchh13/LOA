@@ -1,90 +1,113 @@
 #pragma once
 
 //-----------------------------------------------------------------------------
-// SaveManager.h
-// Handles serialization of all game state to/from sdmc:/loa_save.bin.
+// Renderer.h  (Milestone 3)
 //
-// API:
-//   saveGame(...)  — write current state to SD card
-//   loadGame(...)  — read state from SD card and apply to all systems
-//   hasSave()      — true if a valid save file exists
-//   deleteSave()   — remove the save file
+// Additions over Milestone 2:
+//   drawQuestMarker(...)    — pulsing diamond marker on the top screen
+//   drawQuestHUD(...)       — objective text on bottom screen (no dialogue)
 //
-// All functions are static — SaveManager holds no state of its own.
-// The save file is written atomically: data goes to loa_save.tmp first,
-// then renamed to loa_save.bin. This prevents corruption on power-off
-// during a write (the previous save stays intact until the new one is
-// complete).
+// Render order (top screen):
+//   1. Tile map
+//   2. NPCs
+//   3. Quest marker (if active in current zone)
+//   4. Player
+//   5. FPS + clock debug
+//   6. Day/night tint
+//   7. Zone transition fade
+//   8. Zone name banner
 //
-// Load validation:
-//   1. File must exist and be exactly sizeof(SaveData) bytes.
-//   2. magic must equal SAVE_MAGIC.
-//   3. version must equal SAVE_VERSION.
-//   4. CRC32 of the data block must match the stored checksum.
-//   If any check fails, loadGame() returns false and the caller starts
-//   a new game.
+// Bottom screen:
+//   Dialogue box (when active), otherwise quest HUD.
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
-#include "SaveData.h"
-#include "../quest/PlayerState.h"
-#include "../quest/QuestManager.h"
-#include "../world/WorldObjectManager.h"
-#include "../world/ZoneManager.h"
-#include "../core/WorldClock.h"
-#include "../entities/Player.h"
+#include "../world/TileMap.h"
+#include "../world/WorldObject.h"
+#include "../npc/NPC.h"
+#include "../npc/NPCManager.h"
+#include "Camera.h"
 
-class SaveManager {
+#include <citro2d.h>
+
+class Renderer {
 public:
-    // Gather current game state into SaveData and write to SD card.
-    // Returns true on success.
-    static bool saveGame(const Player&             player,
-                         const ZoneManager&         zones,
-                         const WorldClock&          worldClock,
-                         const PlayerState&         playerState,
-                         const QuestManager&        questMgr,
-                         const WorldObjectManager&  worldObjects);
+    Renderer();
+    ~Renderer();
 
-    // Read SaveData from SD card and apply to all game systems.
-    // Returns true if a valid save was loaded.
-    // On failure (no file, bad magic, wrong version, bad CRC) returns false.
-    static bool loadGame(Player&             player,
-                         ZoneManager&         zones,
-                         WorldClock&          worldClock,
-                         PlayerState&         playerState,
-                         QuestManager&        questMgr,
-                         WorldObjectManager&  worldObjects,
-                         TileMap&             map);
+    bool init();
 
-    // Returns true if a save file exists that passes all validation.
-    static bool hasSave();
+    // beginFrame clears the top screen with the zone's background color.
+    void beginFrame(u32 bgColor);
 
-    // Delete the save file. Returns true if deleted (or didn't exist).
-    static bool deleteSave();
+    // Draw all visible tiles.
+    void drawTileMap(const TileMap& map, const Camera& cam);
+
+    // Draw all active NPCs in the current zone.
+    void drawNPCs(const NPCManager& npcs, ZoneID currentZone, const Camera& cam);
+
+    // Draw the player sprite.
+    void drawPlayer(float worldX, float worldY, const Camera& cam);
+
+    // Draw FPS counter and world clock (HH:MM + phase) in debug area.
+    void drawClockDebug(float fps, int hour, int minute, const char* phase);
+
+    // Draw day/night tint overlay. color.alpha drives intensity.
+    // Call after world geometry, before fade and UI.
+    void drawTint(u32 color);
+
+    // Draw full-screen black fade [0,1].
+    void drawFade(float alpha);
+
+    // Draw zone name banner.
+    void drawZoneName(const char* name, float alpha);
+
+    // Draw dialogue box on bottom screen.
+    // npc: the NPC currently speaking (must not be null).
+    void drawDialogue(const NPC* npc);
+
+    // Draw world objects (bridges, ladders, obstacles) in the current zone.
+    // objects/count from WorldObjectManager::getObjects() / getObjectCount().
+    void drawWorldObjects(const WorldObject* objects, int count,
+                          ZoneID currentZone, const Camera& cam);
+
+    // Draw quest objective text, gold, and resources on bottom screen.
+    // objectiveText: nullptr = show "No active quest".
+    void drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rope);
+
+    // Draw a centered status message on the top screen (e.g. "Game Saved").
+    // alpha [0,1] for fade in/out. Call after world geometry, before endFrame.
+    void drawStatusMessage(const char* text, float alpha);
+
+    // Draw a pulsing diamond marker at a world position.
+    // Used to show REACH_MARKER objective locations.
+    // timeAccum: running total real seconds (for pulse animation).
+    void drawQuestMarker(float worldX, float worldY,
+                         const Camera& cam, float timeAccum);
+
+    void endFrame();
+
+    bool isReady() const { return m_ready; }
 
 private:
-    static constexpr const char* SAVE_PATH = "sdmc:/loa_save.bin";
-    static constexpr const char* TEMP_PATH = "sdmc:/loa_save.tmp";
+    bool              m_ready;
+    C3D_RenderTarget* m_topTarget;
+    C3D_RenderTarget* m_botTarget;
 
-    // Fill a SaveData from current game state.
-    static void gather(SaveData&                 out,
-                       const Player&             player,
-                       const ZoneManager&        zones,
-                       const WorldClock&         worldClock,
-                       const PlayerState&        playerState,
-                       const QuestManager&       questMgr,
-                       const WorldObjectManager& worldObjects);
+    C2D_SpriteSheet m_spriteSheet;
+    C2D_Image       m_imgGrass;
+    C2D_Image       m_imgWall;
+    C2D_Image       m_imgPlayer;
 
-    // Apply a validated SaveData to all game systems.
-    static void apply(const SaveData&      sd,
-                      Player&              player,
-                      ZoneManager&         zones,
-                      WorldClock&          worldClock,
-                      PlayerState&         playerState,
-                      QuestManager&        questMgr,
-                      WorldObjectManager&  worldObjects,
-                      TileMap&             map);
+    // Larger text buffer: FPS(12) + clock(10) + phase(10) + zone name(24)
+    // + dialogue(80) + NPC names(20) + padding = 256 glyphs
+    C2D_TextBuf m_textBuf;
 
-    // Validate a SaveData: magic, version, CRC.
-    static bool validate(const SaveData& sd);
+    bool m_useFallbackColors;
+    bool m_dialogueDrawnThisFrame; // guards bottom screen draw
+
+    static u32  fallbackColorForTile(u8 tileId);
+    void        drawColorRect(float sx, float sy, float w, float h, u32 color) const;
+    void        drawNPCSprite(float sx, float sy) const;
 };
+

@@ -45,3 +45,4 @@ void Logger::error(const char* fmt, ...) {
     va_end(args);
     printf("[ERR] %s\n", buf);
 }
+

@@ -62,3 +62,4 @@ private:
     int   m_lastHour;      // previous frame's hour, for change detection
     bool  m_hourChanged;   // true for exactly one frame
 };
+

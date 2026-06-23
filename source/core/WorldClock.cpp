@@ -46,3 +46,4 @@ void WorldClock::setTime(int totalMinutes) {
     m_hourChanged  = false;
     m_accumulator  = 0.0f;
 }
+

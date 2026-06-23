@@ -88,3 +88,4 @@ private:
     // Helper: populate one NPC slot.
     NPC& slot(int i) { return m_npcs[i]; }
 };
+

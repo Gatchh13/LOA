@@ -33,3 +33,4 @@ public:
 private:
     Vec2 m_pos;
 };
+

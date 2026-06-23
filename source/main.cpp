@@ -87,9 +87,8 @@ int main() {
             player, zones, worldClock, playerState,
             questMgr, worldObjects, zones.getTileMap());
         if (loadedSave) {
-            // Re-apply world object overrides for the loaded zone
-            worldObjects.onZoneLoaded(zones.getCurrentZoneDef().id,
-                                      zones.getTileMap());
+            // SaveManager::apply() already applied world object overrides
+            // for the loaded zone (load zone -> restore states -> onZoneLoaded).
             npcs.init(worldClock.getTotalMinutes());
             LOG("Save loaded successfully");
         } else {
@@ -99,6 +98,7 @@ int main() {
 
     if (!loadedSave) {
         // Fresh new game
+        playerState.init();
         npcs.init(worldClock.getTotalMinutes());
         LOG("New game started");
     }
@@ -149,8 +149,8 @@ int main() {
                     playerState, questMgr, worldObjects,
                     zones.getTileMap());
                 if (ok) {
-                    worldObjects.onZoneLoaded(zones.getCurrentZoneDef().id,
-                                              zones.getTileMap());
+                    // SaveManager::apply() already applied world object
+                    // overrides for the loaded zone.
                     npcs.init(worldClock.getTotalMinutes());
                     camera.update(player.getCenterX(), player.getCenterY(),
                                   zones.getTileMap().getWidthPixels(),

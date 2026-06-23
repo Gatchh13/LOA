@@ -1,113 +1,132 @@
 #pragma once
 
 //-----------------------------------------------------------------------------
-// Renderer.h  (Milestone 3)
+// SaveData.h
+// Fixed-size binary save structure for Legends of Aetheria.
 //
-// Additions over Milestone 2:
-//   drawQuestMarker(...)    — pulsing diamond marker on the top screen
-//   drawQuestHUD(...)       — objective text on bottom screen (no dialogue)
+// RULES:
+//   - POD only. No pointers. No virtual functions. No constructors.
+//   - All fields are primitive types or fixed-size arrays.
+//   - #pragma pack(1) ensures no compiler padding surprises.
+//   - sizeof(SaveData) is static_assert'd to catch accidental changes.
+//   - The struct is written/read as one fwrite/fread block.
 //
-// Render order (top screen):
-//   1. Tile map
-//   2. NPCs
-//   3. Quest marker (if active in current zone)
-//   4. Player
-//   5. FPS + clock debug
-//   6. Day/night tint
-//   7. Zone transition fade
-//   8. Zone name banner
+// VERSIONING:
+//   SAVE_VERSION is bumped whenever the layout changes.
+//   SaveManager::loadGame() rejects saves with mismatched versions and
+//   falls back to a new game rather than crashing on garbage data.
 //
-// Bottom screen:
-//   Dialogue box (when active), otherwise quest HUD.
+// FUTURE EXTENSION:
+//   Each "reserved" block is named for its intended future system.
+//   To add inventory: replace reserved_inventory[64] with an actual
+//   ItemSlot array. Bump SAVE_VERSION. No other changes needed.
+//
+// SIZE: 236 bytes (well under the 8 KB target).
+//
+// NPC POSITIONS:
+//   Not saved. NPCs reconstruct their schedule position from the saved
+//   world clock time. This is the correct approach — it avoids NPC
+//   de-sync bugs and keeps the save file minimal.
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
-#include "../world/TileMap.h"
+#include "../quest/PlayerState.h"
 #include "../world/WorldObject.h"
-#include "../npc/NPC.h"
-#include "../npc/NPCManager.h"
-#include "Camera.h"
+#include "../quest/QuestManager.h"
+#include <cstddef>  // offsetof
 
-#include <citro2d.h>
+static constexpr u16 SAVE_VERSION   = 5;     // bump on every layout change
+static constexpr u32 SAVE_MAGIC     = 0x4C4F4100;  // "LOA\0"
 
-class Renderer {
-public:
-    Renderer();
-    ~Renderer();
+//-----------------------------------------------------------------------------
+// Inline CRC32 — no external library needed.
+// Computes a 32-bit checksum over a byte buffer.
+// Declared here so SaveManager can include just this header.
+//-----------------------------------------------------------------------------
+inline u32 loa_crc32(const void* data, u32 length) {
+    const u8* bytes = static_cast<const u8*>(data);
+    u32 crc = 0xFFFFFFFFu;
+    for (u32 i = 0; i < length; i++) {
+        crc ^= bytes[i];
+        for (int j = 0; j < 8; j++) {
+            crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1u));
+        }
+    }
+    return ~crc;
+}
 
-    bool init();
+#pragma pack(push, 1)
+struct SaveData {
+    //-------------------------------------------------------------------------
+    // Header (14 bytes)
+    //-------------------------------------------------------------------------
+    u32 magic;          // SAVE_MAGIC — validation sentinel
+    u16 version;        // SAVE_VERSION — layout version
+    u32 save_count;     // incremented on every save (for debugging)
+    u32 checksum;       // CRC32 of bytes [offsetof(zone_id) .. end of struct]
+                        // Header itself is excluded from checksum.
 
-    // beginFrame clears the top screen with the zone's background color.
-    void beginFrame(u32 bgColor);
+    //-------------------------------------------------------------------------
+    // Player position (10 bytes)
+    //-------------------------------------------------------------------------
+    u8  zone_id;        // ZoneID cast to u8
+    u8  player_pad;     // reserved, write 0
+    f32 player_x;       // pixel position (top-left of player rect)
+    f32 player_y;
 
-    // Draw all visible tiles.
-    void drawTileMap(const TileMap& map, const Camera& cam);
+    //-------------------------------------------------------------------------
+    // World clock (4 bytes)
+    //-------------------------------------------------------------------------
+    u16 total_minutes;  // 0–1439, in-game minutes since midnight
+    u8  time_pad[2];    // reserved, write 0
 
-    // Draw all active NPCs in the current zone.
-    void drawNPCs(const NPCManager& npcs, ZoneID currentZone, const Camera& cam);
+    //-------------------------------------------------------------------------
+    // Player resources (8 bytes) — PlayerState layout mirrored manually
+    //
+    // PlayerState is now a plain POD struct (no constructor) and could be
+    // embedded directly here. Still mirrored rather than embedded for now —
+    // doing that swap is scheduled for Milestone 7 alongside the inventory
+    // layout change (Architectural Review Recommendation 3), not as an
+    // incidental change here. Until then, gold/wood/rope must be kept in
+    // sync by hand if PlayerState's fields ever change.
+    //-------------------------------------------------------------------------
+    u32 gold;
+    u8  wood;
+    u8  rope;
+    u8  resource_pad[2];
 
-    // Draw the player sprite.
-    void drawPlayer(float worldX, float worldY, const Camera& cam);
+    //-------------------------------------------------------------------------
+    // Quest states (32 bytes) — MAX_QUESTS = 16 entries × 2 bytes each
+    //-------------------------------------------------------------------------
+    u8  quest_status[MAX_QUESTS];        // QuestStatus cast to u8
+    u8  quest_current_step[MAX_QUESTS];  // current step index
 
-    // Draw FPS counter and world clock (HH:MM + phase) in debug area.
-    void drawClockDebug(float fps, int hour, int minute, const char* phase);
+    //-------------------------------------------------------------------------
+    // World object states (16 bytes) — MAX_WORLD_OBJECTS = 16 × 1 byte each
+    //-------------------------------------------------------------------------
+    u8  world_object_states[MAX_WORLD_OBJECTS]; // WorldObjectState cast to u8
 
-    // Draw day/night tint overlay. color.alpha drives intensity.
-    // Call after world geometry, before fade and UI.
-    void drawTint(u32 color);
-
-    // Draw full-screen black fade [0,1].
-    void drawFade(float alpha);
-
-    // Draw zone name banner.
-    void drawZoneName(const char* name, float alpha);
-
-    // Draw dialogue box on bottom screen.
-    // npc: the NPC currently speaking (must not be null).
-    void drawDialogue(const NPC* npc);
-
-    // Draw world objects (bridges, ladders, obstacles) in the current zone.
-    // objects/count from WorldObjectManager::getObjects() / getObjectCount().
-    void drawWorldObjects(const WorldObject* objects, int count,
-                          ZoneID currentZone, const Camera& cam);
-
-    // Draw quest objective text, gold, and resources on bottom screen.
-    // objectiveText: nullptr = show "No active quest".
-    void drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rope);
-
-    // Draw a centered status message on the top screen (e.g. "Game Saved").
-    // alpha [0,1] for fade in/out. Call after world geometry, before endFrame.
-    void drawStatusMessage(const char* text, float alpha);
-
-    // Draw a pulsing diamond marker at a world position.
-    // Used to show REACH_MARKER objective locations.
-    // timeAccum: running total real seconds (for pulse animation).
-    void drawQuestMarker(float worldX, float worldY,
-                         const Camera& cam, float timeAccum);
-
-    void endFrame();
-
-    bool isReady() const { return m_ready; }
-
-private:
-    bool              m_ready;
-    C3D_RenderTarget* m_topTarget;
-    C3D_RenderTarget* m_botTarget;
-
-    C2D_SpriteSheet m_spriteSheet;
-    C2D_Image       m_imgGrass;
-    C2D_Image       m_imgWall;
-    C2D_Image       m_imgPlayer;
-
-    // Larger text buffer: FPS(12) + clock(10) + phase(10) + zone name(24)
-    // + dialogue(80) + NPC names(20) + padding = 256 glyphs
-    C2D_TextBuf m_textBuf;
-
-    bool m_useFallbackColors;
-    bool m_dialogueDrawnThisFrame; // guards bottom screen draw
-
-    static u32  fallbackColorForTile(u8 tileId);
-    void        drawColorRect(float sx, float sy, float w, float h, u32 color) const;
-    void        drawNPCSprite(float sx, float sy) const;
+    //-------------------------------------------------------------------------
+    // Reserved blocks for future systems
+    // Replace with real structs when those milestones arrive.
+    // Bump SAVE_VERSION when any block changes.
+    //-------------------------------------------------------------------------
+    u8  reserved_inventory[64];    // Milestone 6: item slots
+    u8  reserved_skills[32];       // Future: skill XP levels
+    u8  reserved_reputation[16];   // Future: faction reputation
+    u8  reserved_titles[8];        // Future: unlocked title bitfield
+    u8  reserved_crafting[16];     // Future: crafting unlock flags
+    u8  reserved_housing[16];      // Future: housing state
 };
+#pragma pack(pop)
 
+// Compile-time size verification.
+// If this fails, the layout has changed without a version bump.
+static_assert(sizeof(SaveData) == 236, "SaveData size changed — bump SAVE_VERSION");
+
+// Offset of the first checksummed byte (everything after the header).
+// Tied directly to the struct layout via offsetof() so it can never drift
+// out of sync if a header field is added, removed, or resized — a literal
+// constant here would silently checksum the wrong bytes and invalidate
+// every existing save without any compiler warning.
+static constexpr u32 CHECKSUM_OFFSET = static_cast<u32>(offsetof(SaveData, zone_id));

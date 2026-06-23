@@ -110,3 +110,4 @@ float ZoneManager::getNameAlpha() const {
     }
     return 1.0f;
 }
+

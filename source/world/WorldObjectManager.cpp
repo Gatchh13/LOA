@@ -240,25 +240,23 @@ void WorldObjectManager::setState(u8 id, WorldObjectState s, TileMap& map) {
 
 void WorldObjectManager::setStatesFromSave(const u8* states, int count, TileMap& map) {
     // states[] is slot-indexed (0..MAX_WORLD_OBJECTS-1), same order as m_objects.
-    // Re-apply overrides for the currently loaded zone after restoring.
+    //
+    // IMPORTANT: this function restores STATE ONLY. It deliberately does not
+    // touch tile overrides. Applying overrides here used to mean every active
+    // object in EVERY zone got its overrides written into whichever map
+    // happens to be loaded at the time — so a Forest object's override could
+    // silently land on a Town tile that shares the same (tx,ty) coordinate.
+    //
+    // The correct sequence, and the only one the caller should use, is:
+    //   1. zones.loadZone(savedZone)            — load the correct TileMap
+    //   2. worldObjects.setStatesFromSave(...)  — restore state values only
+    //   3. worldObjects.onZoneLoaded(savedZone) — apply THIS zone's overrides
+    // (map parameter is unused now but kept so the call site doesn't need to
+    // change shape; remove once no caller depends on the old signature.)
+    (void)map;
     int n = count < MAX_WORLD_OBJECTS ? count : MAX_WORLD_OBJECTS;
     for (int i = 0; i < n; i++) {
         if (!m_objects[i].active) continue;
         m_objects[i].state = static_cast<WorldObjectState>(states[i]);
-    }
-    // Re-apply overrides for whatever zone is currently loaded.
-    // Caller must ensure the correct zone's map is already loaded.
-    ZoneID currentZone = ZoneID::COUNT; // will be set properly below
-    // Derive zone from first active object to know which to filter by —
-    // but we re-apply ALL objects because onZoneLoaded handles filtering.
-    // Safe: applyOverrides checks tx/ty against map bounds via setTileOverride,
-    // and setTileOverride simply ignores out-of-range coords gracefully.
-    // Actually the correct approach: just call applyOverrides for every active
-    // object; TileMap ignores overrides outside its current dimensions.
-    (void)currentZone;
-    map.clearOverrides();
-    for (int i = 0; i < MAX_WORLD_OBJECTS; i++) {
-        if (!m_objects[i].active) continue;
-        applyOverrides(m_objects[i], map);
     }
 }

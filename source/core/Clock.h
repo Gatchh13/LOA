@@ -32,3 +32,4 @@ private:
     float m_fpsAccum;
     int   m_fpsFrames;
 };
+

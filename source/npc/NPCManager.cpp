@@ -216,3 +216,4 @@ const NPC* NPCManager::getActiveDialogueNPC() const {
     if (m_activeDialogueIndex < 0) return nullptr;
     return &m_npcs[m_activeDialogueIndex];
 }
+

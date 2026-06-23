@@ -110,3 +110,4 @@ private:
     void        drawColorRect(float sx, float sy, float w, float h, u32 color) const;
     void        drawNPCSprite(float sx, float sy) const;
 };
+

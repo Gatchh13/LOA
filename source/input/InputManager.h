@@ -36,3 +36,4 @@ private:
     // Circle Pad dead zone (raw value range is roughly -154 to 154)
     static constexpr s16 DEADZONE = 20;
 };
+

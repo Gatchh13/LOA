@@ -19,3 +19,4 @@ void Player::setPosition(float x, float y) {
     m_pos.x = x;
     m_pos.y = y;
 }
+

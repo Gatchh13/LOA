@@ -86,9 +86,20 @@ struct QuestDef {
 };
 
 //-----------------------------------------------------------------------------
-// Quest ID constants
+// Quest ID registry
+//
+// All quest IDs are defined here, once. When adding a new quest, add it to
+// this enum rather than declaring a standalone constant elsewhere — this is
+// what prevents ID collisions once the quest count grows past one.
 //-----------------------------------------------------------------------------
-static constexpr u8 QUEST_MISSING_PACKAGE = 0;
+enum class QuestID : u8 {
+    MISSING_PACKAGE = 0,
+    COUNT  // keep last — number of quests currently defined
+};
+
+// Legacy alias — existing code references QUEST_MISSING_PACKAGE as a u8.
+// New code should prefer QuestID::MISSING_PACKAGE.
+static constexpr u8 QUEST_MISSING_PACKAGE = static_cast<u8>(QuestID::MISSING_PACKAGE);
 
 //-----------------------------------------------------------------------------
 // Proximity radius for REACH_MARKER objectives (pixels).
@@ -147,7 +158,19 @@ static const QuestDef s_questDefs[] = {
     },
 };
 
-// Accessor
+// Number of quests actually defined in s_questDefs. Kept separate from
+// MAX_QUESTS (the SaveData/runtime array capacity) intentionally — this
+// catches the case where QuestID gains an entry but s_questDefs doesn't
+// (or vice versa).
+static constexpr int QUEST_DEF_COUNT = sizeof(s_questDefs) / sizeof(s_questDefs[0]);
+static_assert(QUEST_DEF_COUNT == static_cast<int>(QuestID::COUNT),
+              "s_questDefs and QuestID registry are out of sync — "
+              "every entry added to one must be added to the other");
+static_assert(static_cast<int>(QuestID::COUNT) <= MAX_QUESTS,
+              "More quests defined than MAX_QUESTS allows — "
+              "grow MAX_QUESTS and the SaveData quest arrays first");
+
+// Accessor. quest_id must be < QUEST_DEF_COUNT.
 inline const QuestDef& getQuestDef(u8 quest_id) {
     return s_questDefs[quest_id];
 }

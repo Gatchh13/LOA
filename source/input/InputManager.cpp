@@ -63,3 +63,4 @@ Vec2 InputManager::getMovementAxis() const {
 
     return Vec2(dx, dy);
 }
+

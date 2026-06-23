@@ -56,6 +56,16 @@ public:
     // Call once at startup.
     void init();
 
+    // Start a quest: NOT_STARTED -> IN_PROGRESS.
+    // Asserts (debug builds) if another quest is already IN_PROGRESS — v1
+    // supports exactly one active quest at a time, and findActiveQuest()
+    // silently assumes this everywhere (HUD text, markers, dialogue
+    // overrides). Returns false (without starting anything) if the
+    // assumption would be violated, so a future call site that tries to
+    // start a second concurrent quest fails loudly instead of silently
+    // losing track of the first one.
+    bool startQuest(u8 quest_id);
+
     // Call every frame.
     // Checks REACH_MARKER objectives for the active quest.
     void update(ZoneID currentZone, float playerX, float playerY);

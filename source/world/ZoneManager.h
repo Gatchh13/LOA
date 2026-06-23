@@ -58,6 +58,10 @@ public:
     // The currently active tile map (read by Renderer and Collision).
     const TileMap& getTileMap() const { return m_tileMap; }
 
+    // Mutable access for systems that apply runtime tile overrides
+    // (WorldObjectManager) or restore saved state into the map (SaveManager).
+    TileMap& getTileMap() { return m_tileMap; }
+
     // Current zone definition (for metadata like name).
     const ZoneDef& getCurrentZoneDef() const { return getZoneDef(m_currentZone); }
 

@@ -48,3 +48,4 @@ private:
     GameState stack[STACK_DEPTH];
     int top;
 };
+

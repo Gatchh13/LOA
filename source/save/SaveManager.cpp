@@ -71,9 +71,14 @@ void SaveManager::apply(const SaveData&      sd,
     if (sd.zone_id >= ZONE_COUNT) savedZone = ZoneID::TOWN;  // safety clamp
     zones.loadZone(savedZone, 0);  // spawn index 0 — position overridden below
 
-    // 2. Restore world object states and re-apply tile overrides
-    //    (must happen after zone load so TileMap has the correct base)
+    // 2. Restore world object states (values only — no overrides applied yet)
     worldObjects.setStatesFromSave(sd.world_object_states, MAX_WORLD_OBJECTS, map);
+
+    // 2b. Apply overrides for ONLY the zone we just loaded. This must come
+    //     after setStatesFromSave() and after loadZone() above — onZoneLoaded
+    //     filters by obj.zone == savedZone, so objects belonging to other
+    //     zones never touch this TileMap.
+    worldObjects.onZoneLoaded(savedZone, map);
 
     // 3. Place the player at the saved position
     player.setPosition(sd.player_x, sd.player_y);

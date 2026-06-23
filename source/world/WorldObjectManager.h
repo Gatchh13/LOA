@@ -75,7 +75,12 @@ public:
     void             setState(u8 id, WorldObjectState s, TileMap& map);
 
     // Restore all world object states from save data (slot-indexed, not id-indexed).
-    // Called only by SaveManager::apply(). Applies tile overrides after restore.
+    // Called only by SaveManager::apply(). Restores state values ONLY — does
+    // NOT touch tile overrides. The caller MUST call onZoneLoaded(zone, map)
+    // immediately after this, so that only the correctly-loaded zone's
+    // overrides get applied (applying every zone's overrides regardless of
+    // which TileMap is loaded was the cause of a cross-zone tile corruption
+    // bug — see WorldObjectManager.cpp).
     void setStatesFromSave(const u8* states, int count, TileMap& map);
 
     static constexpr float MESSAGE_DURATION = 3.0f;  // seconds to show message

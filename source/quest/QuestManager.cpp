@@ -192,3 +192,15 @@ float QuestManager::getMarkerY() const {
     if (qs.current_step >= qd.step_count) return 0.0f;
     return qd.steps[qs.current_step].marker_y;
 }
+
+u8 QuestManager::getCurrentStep(u8 quest_id) const {
+    if (quest_id >= MAX_QUESTS) return 0;
+    return m_states[quest_id].current_step;
+}
+
+void QuestManager::setStateFromSave(u8 quest_id, QuestStatus status, u8 step) {
+    if (quest_id >= MAX_QUESTS) return;
+    m_states[quest_id].status             = status;
+    m_states[quest_id].current_step       = step;
+    m_states[quest_id].step_just_completed = false;
+}

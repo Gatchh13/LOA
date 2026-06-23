@@ -74,6 +74,10 @@ public:
     WorldObjectState getState(u8 id) const;
     void             setState(u8 id, WorldObjectState s, TileMap& map);
 
+    // Restore all world object states from save data (slot-indexed, not id-indexed).
+    // Called only by SaveManager::apply(). Applies tile overrides after restore.
+    void setStatesFromSave(const u8* states, int count, TileMap& map);
+
     static constexpr float MESSAGE_DURATION = 3.0f;  // seconds to show message
 
 private:

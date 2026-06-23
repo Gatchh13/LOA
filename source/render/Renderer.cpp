@@ -521,7 +521,36 @@ void Renderer::drawQuestMarker(float worldX, float worldY,
 }
 
 //-----------------------------------------------------------------------------
-void Renderer::endFrame() {
+// drawStatusMessage
+// Semi-transparent dark pill centered on the top screen.
+// Used for "Game Saved" / "Game Loaded" notifications.
+//-----------------------------------------------------------------------------
+void Renderer::drawStatusMessage(const char* text, float alpha) {
+    if (alpha <= 0.0f || !text) return;
+    u8 a = static_cast<u8>(std::min(alpha, 1.0f) * 255.0f);
+
+    // Background pill
+    drawColorRect(100.0f, 108.0f, 200.0f, 24.0f,
+                  C2D_Color32(0, 0, 0, static_cast<u8>(a * 0.75f)));
+
+    C2D_Text msgText;
+    C2D_TextParse(&msgText, m_textBuf, text);
+    C2D_TextOptimize(&msgText);
+
+    float tw = 0.0f, th = 0.0f;
+    C2D_TextGetDimensions(&msgText, 0.65f, 0.65f, &tw, &th);
+    float tx = (static_cast<float>(SCREEN_TOP_W) - tw) * 0.5f;
+    float ty = 108.0f + (24.0f + th) * 0.5f;
+
+    C2D_DrawText(&msgText, C2D_WithColor | C2D_AtBaseline,
+                 tx + 1.0f, ty + 1.0f, 0.75f, 0.65f, 0.65f,
+                 C2D_Color32(0, 0, 0, a));
+    C2D_DrawText(&msgText, C2D_WithColor | C2D_AtBaseline,
+                 tx, ty, 0.8f, 0.65f, 0.65f,
+                 C2D_Color32(180, 255, 180, a));
+}
+
+//-----------------------------------------------------------------------------
     if (!m_dialogueDrawnThisFrame) {
         C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
         C2D_SceneBegin(m_botTarget);

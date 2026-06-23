@@ -80,6 +80,13 @@ public:
     // Status of a specific quest.
     QuestStatus getStatus(u8 quest_id) const;
 
+    // Current step index for a specific quest (for save serialization).
+    u8 getCurrentStep(u8 quest_id) const;
+
+    // Restore quest state directly from save data (bypasses normal flow).
+    // Called only by SaveManager::apply().
+    void setStateFromSave(u8 quest_id, QuestStatus status, u8 step);
+
     // True if the marker should be drawn in the current zone.
     bool markerVisible(ZoneID currentZone) const;
 

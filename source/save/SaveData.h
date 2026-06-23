@@ -33,6 +33,7 @@
 #include "../quest/PlayerState.h"
 #include "../world/WorldObject.h"
 #include "../quest/QuestManager.h"
+#include <cstddef>  // offsetof
 
 static constexpr u16 SAVE_VERSION   = 5;     // bump on every layout change
 static constexpr u32 SAVE_MAGIC     = 0x4C4F4100;  // "LOA\0"
@@ -81,9 +82,13 @@ struct SaveData {
 
     //-------------------------------------------------------------------------
     // Player resources (8 bytes) — PlayerState layout mirrored manually
-    // We mirror rather than embed PlayerState directly because PlayerState
-    // has a constructor (making it non-trivially constructible) which can
-    // prevent placement inside a #pragma pack struct on some compilers.
+    //
+    // PlayerState is now a plain POD struct (no constructor) and could be
+    // embedded directly here. Still mirrored rather than embedded for now —
+    // doing that swap is scheduled for Milestone 7 alongside the inventory
+    // layout change (Architectural Review Recommendation 3), not as an
+    // incidental change here. Until then, gold/wood/rope must be kept in
+    // sync by hand if PlayerState's fields ever change.
     //-------------------------------------------------------------------------
     u32 gold;
     u8  wood;
@@ -120,4 +125,8 @@ struct SaveData {
 static_assert(sizeof(SaveData) == 236, "SaveData size changed — bump SAVE_VERSION");
 
 // Offset of the first checksummed byte (everything after the header).
-static constexpr u32 CHECKSUM_OFFSET = 14u;
+// Tied directly to the struct layout via offsetof() so it can never drift
+// out of sync if a header field is added, removed, or resized — a literal
+// constant here would silently checksum the wrong bytes and invalidate
+// every existing save without any compiler warning.
+static constexpr u32 CHECKSUM_OFFSET = static_cast<u32>(offsetof(SaveData, zone_id));

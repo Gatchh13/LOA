@@ -104,3 +104,4 @@ enum class InteractResult : u8 {
     ALREADY_REPAIRED,   // player pressed A on a repaired object
     NEED_RESOURCES,     // in range but can't afford
 };
+

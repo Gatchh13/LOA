@@ -1,92 +1,62 @@
+#pragma once
+
 //-----------------------------------------------------------------------------
-// TileMap.cpp  (Milestone 4 — adds override layer)
+// TileMap.h  (Milestone 4 — adds runtime tile override layer)
+//
+// New in Milestone 4:
+//   setTileOverride(tx, ty, tileId) — write a runtime tile value
+//   clearOverrides()                — reset all overrides (call on zone load)
+//   isSolid() checks override layer BEFORE the base layer
+//
+// Override layer design:
+//   Fixed array of MAX_TILE_OVERRIDES entries.
+//   Linear scan — at most 16 entries, scanned at most 4 times per collision
+//   rect check. Negligible CPU cost.
+//   0xFF in the override tile field = entry unused.
 //-----------------------------------------------------------------------------
 
-#include "TileMap.h"
-#include <citro2d.h>  // C2D_Color32() — used for the default background color
-#include <cstring>
+#include "../../include/types.h"
+#include "ZoneData.h"
 
-TileMap::TileMap()
-    : m_width(0)
-    , m_height(0)
-    , m_bgColor(C2D_Color32(20, 20, 20, 255))
-{
-    memset(m_tiles, TILE_WALL, sizeof(m_tiles));
-    clearOverrides();
-}
+static constexpr int MAX_TILE_OVERRIDES = 16;
 
-void TileMap::loadFromData(const ZoneDef& def) {
-    m_width   = def.width;
-    m_height  = def.height;
-    m_bgColor = def.bgColor;
+struct TileOverrideEntry {
+    u8 tx;
+    u8 ty;
+    u8 tile_id;   // 0xFF = unused slot
+};
 
-    for (int row = 0; row < m_height; row++) {
-        for (int col = 0; col < m_width; col++) {
-            m_tiles[row][col] = def.tiles[row * m_width + col];
-        }
-    }
-    // Overrides are NOT cleared here — WorldObjectManager calls clearOverrides()
-    // then re-applies the correct state via onZoneLoaded(). This ordering
-    // ensures WorldObjectManager controls the override lifecycle.
-}
+class TileMap {
+public:
+    TileMap();
 
-void TileMap::clearOverrides() {
-    for (int i = 0; i < MAX_TILE_OVERRIDES; i++) {
-        m_overrides[i].tx      = 0;
-        m_overrides[i].ty      = 0;
-        m_overrides[i].tile_id = 0xFF;  // 0xFF = unused
-    }
-}
+    // Load tile data from a ZoneDef. Clears overrides.
+    void loadFromData(const ZoneDef& def);
 
-void TileMap::setTileOverride(int tx, int ty, u8 tileId) {
-    // Reject coordinates outside the currently loaded zone. Without this
-    // check, an override meant for one zone's geometry (e.g. applied by
-    // WorldObjectManager for an object that belongs to a different zone)
-    // would silently land on whatever real tile happens to share that
-    // (tx,ty) in the zone that's actually loaded right now.
-    if (tx < 0 || ty < 0 || tx >= m_width || ty >= m_height) {
-        return;
-    }
+    // Runtime override: set a specific tile to a different ID.
+    // Overwrites any existing override for the same (tx,ty).
+    void setTileOverride(int tx, int ty, u8 tileId);
 
-    // Find existing entry for this coordinate and update it
-    for (int i = 0; i < MAX_TILE_OVERRIDES; i++) {
-        if (m_overrides[i].tile_id != 0xFF &&
-            m_overrides[i].tx == static_cast<u8>(tx) &&
-            m_overrides[i].ty == static_cast<u8>(ty))
-        {
-            m_overrides[i].tile_id = tileId;
-            return;
-        }
-    }
-    // Find empty slot
-    for (int i = 0; i < MAX_TILE_OVERRIDES; i++) {
-        if (m_overrides[i].tile_id == 0xFF) {
-            m_overrides[i].tx      = static_cast<u8>(tx);
-            m_overrides[i].ty      = static_cast<u8>(ty);
-            m_overrides[i].tile_id = tileId;
-            return;
-        }
-    }
-    // Override table full — this should not happen with MAX_TILE_OVERRIDES=16
-    // and only 3 objects with at most 3 tiles each (9 overrides max).
-}
+    // Remove all runtime overrides (call after loadFromData).
+    void clearOverrides();
 
-u8 TileMap::getTile(int tx, int ty) const {
-    if (tx < 0 || ty < 0 || tx >= m_width || ty >= m_height) {
-        return TILE_FIRST_SOLID;
-    }
-    // Check override layer first
-    for (int i = 0; i < MAX_TILE_OVERRIDES; i++) {
-        if (m_overrides[i].tile_id != 0xFF &&
-            m_overrides[i].tx == static_cast<u8>(tx) &&
-            m_overrides[i].ty == static_cast<u8>(ty))
-        {
-            return m_overrides[i].tile_id;
-        }
-    }
-    return m_tiles[ty][tx];
-}
+    // Returns tile ID at (tx, ty). Override layer checked first.
+    u8 getTile(int tx, int ty) const;
 
-bool TileMap::isSolid(int tx, int ty) const {
-    return getTile(tx, ty) >= TILE_FIRST_SOLID;
-}
+    // Returns true if tile is impassable.
+    bool isSolid(int tx, int ty) const;
+
+    int getWidthTiles()   const { return m_width; }
+    int getHeightTiles()  const { return m_height; }
+    int getWidthPixels()  const { return m_width  * TILE_SIZE; }
+    int getHeightPixels() const { return m_height * TILE_SIZE; }
+    u32 getBgColor()      const { return m_bgColor; }
+
+private:
+    u8  m_tiles[MAX_ZONE_H][MAX_ZONE_W];
+    int m_width;
+    int m_height;
+    u32 m_bgColor;
+
+    TileOverrideEntry m_overrides[MAX_TILE_OVERRIDES];
+};

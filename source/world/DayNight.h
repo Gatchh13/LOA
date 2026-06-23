@@ -59,3 +59,4 @@ private:
     static u8 b(u32 c) { return (c >>  8) & 0xFF; }
     static u8 a(u32 c) { return  c        & 0xFF; }
 };
+

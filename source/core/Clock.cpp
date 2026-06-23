@@ -38,3 +38,4 @@ void Clock::tick() {
         m_fpsFrames = 0;
     }
 }
+

@@ -39,3 +39,4 @@ private:
 
 #define WARN(fmt, ...)  Logger::warn(fmt, ##__VA_ARGS__)
 #define ERR(fmt, ...)   Logger::error(fmt, ##__VA_ARGS__)
+

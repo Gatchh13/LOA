@@ -84,3 +84,4 @@ struct NPC {
     // Points to a string literal in QuestDef — never heap-allocated.
     const char* dialogue_override;
 };
+

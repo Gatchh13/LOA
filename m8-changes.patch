@@ -1,0 +1,689 @@
+diff --git a/source/items/ItemDef.h b/source/items/ItemDef.h
+index 76d22eb..7640a18 100644
+--- a/source/items/ItemDef.h
++++ b/source/items/ItemDef.h
+@@ -19,23 +19,32 @@
+ // it exists specifically to prove the item-reward path works for a
+ // non-purchasable item, not just gold-equivalent consumables.
+ //
++// Milestone 8 adds a 9th item, Wolf Pelt — guaranteed loot from the
++// Forest Wolf (see EnemyManager.h). Also not buyable, same pattern as
++// Mira's Token: it proves the loot-drop path grants an item the same
++// way the shop and quest-reward paths already do, without needing a
++// separate "loot" code path through Inventory.
++//
+ // MEMORY FOOTPRINT:
+-//   ItemDef is { const char* name; u8 id; u8 base_price; bool buyable; }.
+-//   Field order matters here: with the pointer first, there's no leading
+-//   alignment padding, so sizeof(ItemDef) == 8 bytes on a 32-bit ARM
+-//   target (4-byte pointer + 3 single-byte fields + 1 byte trailing pad
+-//   to keep the array's stride a multiple of 4). Putting `id` first
+-//   instead would cost 4 extra padding bytes per entry (12 bytes, not 8)
+-//   to keep the pointer aligned — verified by simulating the ARM32
+-//   layout, not assumed. 8 items * 8 bytes = 64 bytes total, in .rodata
+-//   (compiled into the executable, not the 64MB RAM ceiling — same as
+-//   QuestDef/ZoneData). Runtime RAM cost for this file: 0 bytes. It is
+-//   referenced by index/pointer, never copied.
++//   ItemDef is { const char* name; u8 id; u8 base_price; bool buyable;
++//   u16 heal_amount; }. On a 32-bit ARM target: 4 (pointer) + 1 + 1 + 1
++//   (three single-byte fields) + 1 pad + 2 (u16, naturally 2-byte
++//   aligned) = 10, rounded up to 12 bytes to keep the array's stride a
++//   multiple of the pointer's 4-byte alignment. This grew from the
++//   Milestone 7 figure of 8 bytes when heal_amount (u16) was added in
++//   Milestone 8 — verified by trying several field orderings, none of
++//   which recovers the original 8 bytes once a u16 is present alongside
++//   the pointer and three u8s; the extra 4 bytes/item is unavoidable,
++//   not a missed optimization. 9 items * 12 bytes = 108 bytes total, in
++//   .rodata (compiled into the executable, not the 64MB RAM ceiling —
++//   same as QuestDef/ZoneData). Runtime RAM cost for this file: 0 bytes.
++//   It is referenced by index/pointer, never copied.
+ //
+ //   Note: this build environment's test compiler is 64-bit, where
+-//   sizeof(ItemDef) reports 16 bytes (8-byte pointer) instead of 8 —
+-//   that is a property of the test host, not the 3DS target. devkitARM
+-//   compiles for 32-bit ARM, where the 8-byte figure above applies.
++//   sizeof(ItemDef) reports a larger figure (8-byte pointer) than the
++//   12-byte ARM32 figure above — that is a property of the test host,
++//   not the 3DS target. devkitARM compiles for 32-bit ARM, where the
++//   12-byte figure applies.
+ //-----------------------------------------------------------------------------
+ 
+ #include "../../include/types.h"
+@@ -52,31 +61,38 @@ enum class ItemID : u8 {
+     SPARE_CORD    = 5,
+     MIRAS_TOKEN   = 6,  // quest-reward only, not sold in the shop
+     IRON_NAIL     = 7,
++    WOLF_PELT     = 8,  // Milestone 8 — loot-only, not sold in the shop
+     COUNT  // keep last — number of items currently defined
+ };
+ 
+-static constexpr int MAX_ITEMS = 8;
++static constexpr int MAX_ITEMS = 9;
+ 
+ //-----------------------------------------------------------------------------
+ // ItemDef — one item's static data. Pointer field first — see memory
+ // footprint note above for why field order is deliberate here.
++//
++// heal_amount: HP restored on use, 0 = not a healing consumable (the
++// same zero-means-absent convention as InventorySlot.quantity and
++// QuestReward.item_qty, rather than a separate "is_consumable" bool).
+ //-----------------------------------------------------------------------------
+ struct ItemDef {
+     const char* name;
+     u8          id;
+-    u8          base_price;  // gold cost in the shop; ignored if !buyable
+-    bool        buyable;     // true = appears in Mira's stock list
++    u8          base_price;   // gold cost in the shop; ignored if !buyable
++    bool        buyable;      // true = appears in Mira's stock list
++    u16         heal_amount;  // HP restored on use; 0 = not healing-usable
+ };
+ 
+ static const ItemDef s_itemDefs[] = {
+-    { "Healing Herb",  static_cast<u8>(ItemID::HEALING_HERB),   8, true  },
+-    { "Torch",         static_cast<u8>(ItemID::TORCH),          5, true  },
+-    { "Simple Potion", static_cast<u8>(ItemID::SIMPLE_POTION), 15, true  },
+-    { "Trail Ration",  static_cast<u8>(ItemID::TRAIL_RATION),   6, true  },
+-    { "Lantern Oil",   static_cast<u8>(ItemID::LANTERN_OIL),   10, true  },
+-    { "Spare Cord",    static_cast<u8>(ItemID::SPARE_CORD),     4, true  },
+-    { "Mira's Token",  static_cast<u8>(ItemID::MIRAS_TOKEN),    0, false },
+-    { "Iron Nail",     static_cast<u8>(ItemID::IRON_NAIL),      3, true  },
++    { "Healing Herb",  static_cast<u8>(ItemID::HEALING_HERB),   8, true,   20 },
++    { "Torch",         static_cast<u8>(ItemID::TORCH),          5, true,    0 },
++    { "Simple Potion", static_cast<u8>(ItemID::SIMPLE_POTION), 15, true,   50 },
++    { "Trail Ration",  static_cast<u8>(ItemID::TRAIL_RATION),   6, true,    0 },
++    { "Lantern Oil",   static_cast<u8>(ItemID::LANTERN_OIL),   10, true,    0 },
++    { "Spare Cord",    static_cast<u8>(ItemID::SPARE_CORD),     4, true,    0 },
++    { "Mira's Token",  static_cast<u8>(ItemID::MIRAS_TOKEN),    0, false,   0 },
++    { "Iron Nail",     static_cast<u8>(ItemID::IRON_NAIL),      3, true,    0 },
++    { "Wolf Pelt",     static_cast<u8>(ItemID::WOLF_PELT),      0, false,   0 },
+ };
+ 
+ static constexpr int ITEM_DEF_COUNT = sizeof(s_itemDefs) / sizeof(s_itemDefs[0]);
+diff --git a/source/main.cpp b/source/main.cpp
+index 3a405c7..acd75cb 100644
+--- a/source/main.cpp
++++ b/source/main.cpp
+@@ -1,23 +1,27 @@
+ //-----------------------------------------------------------------------------
+-// main.cpp  (Milestone 7 — Economy Loop)
++// main.cpp  (Milestone 8 — Combat Foundation)
+ //
+-// New over Milestone 6:
+-//   - Shop system: pressing Y while talking to Mira opens her stock list
+-//     (ShopUI, see source/world/Shop.h). Up/Down selects, A buys
+-//     (deducts gold, adds to inventory), B leaves. Reuses the existing
+-//     dialogue-open/closed flow rather than adding a new GameState.
+-//   - Inventory: PlayerState now owns an 8-slot Inventory (see
+-//     source/quest/Inventory.h). Populated by shop purchases and quest
+-//     rewards. Persisted in SaveData (version bumped 5 -> 6).
+-//   - Quest rewards can now include an item alongside gold (see
+-//     QuestDef.h's QuestReward) — "The Missing Package" grants Mira's
+-//     Token on completion, proving the reward path for a non-purchasable
+-//     item.
++// New over Milestone 7:
++//   - Player HP (PlayerState.hp/maxHp, 100/100 start). Displayed on the
++//     bottom-screen HUD as simple "HP: 100/100" text.
++//   - Forest Wolf (EnemyManager, see source/combat/) — one enemy, an
++//     Idle/Chase/Attack/Return state machine, contact damage on the
++//     player, melee combat from the player (X), guaranteed Wolf Pelt
++//     loot on death.
++//   - Consumables: L uses a Healing Herb (+20 HP), R uses a Simple
++//     Potion (+50 HP). Dedicated keys, no menu screen — the simplest
++//     implementation that satisfies "no inventory menus if avoidable."
++//   - Death/respawn: HP reaching 0 teleports the player to the Town
++//     spawn point at full HP, costs a small flat amount of gold, and
++//     respawns all enemies. No death screen.
+ //
+ // Button map (gameplay):
+ //   D-Pad / Circle Pad : move
+ //   A                  : interact (NPC, world object, gather node) / buy (in shop)
+ //   B                  : close dialogue / leave shop
++//   X                  : melee attack
++//   L                  : use Healing Herb (+20 HP)
++//   R                  : use Simple Potion (+50 HP)
+ //   Y                  : open shop (only while talking to Mira)
+ //   SELECT             : save
+ //   START              : load
+@@ -43,6 +47,7 @@
+ #include "world/WorldObjectManager.h"
+ #include "world/GatherNodeManager.h"
+ #include "world/Shop.h"
++#include "combat/EnemyManager.h"
+ #include "render/Camera.h"
+ #include "render/Renderer.h"
+ #include "entities/Player.h"
+@@ -84,6 +89,7 @@ int main() {
+     NPCManager         npcs;
+     WorldObjectManager worldObjects;
+     GatherNodeManager  gatherNodes;
++    EnemyManager       enemies;
+     ShopUI             shop;
+     Player             player(0.0f, 0.0f);
+     Camera              camera;
+@@ -105,6 +111,13 @@ int main() {
+     float       shopMessageTimer = 0.0f;
+     static constexpr float SHOP_MESSAGE_DURATION = 2.0f;
+ 
++    // Combat feedback message state (attack/consumable results,
++    // Milestone 8) — same message+timer pattern as everything else in
++    // this file, shown via drawStatusMessage like the save/load banner.
++    const char* combatMessage      = nullptr;
++    float       combatMessageTimer = 0.0f;
++    static constexpr float COMBAT_MESSAGE_DURATION = 2.0f;
++
+     //--------------------------------------------------------------------------
+     // startGame — runs once, when the player picks New Game or Continue on
+     // the title screen. Everything in here used to run unconditionally
+@@ -118,6 +131,7 @@ int main() {
+         zones.loadZone(ZoneID::TOWN, 0);
+         worldObjects.init(zones.getTileMap());
+         gatherNodes.init();
++        enemies.init();
+         questMgr.init();
+ 
+         // Determine start position
+@@ -197,6 +211,9 @@ int main() {
+         bool aPressed      = input.isPressed(KEY_A);
+         bool bPressed      = input.isPressed(KEY_B);
+         bool yPressed      = input.isPressed(KEY_Y);
++        bool xPressed      = input.isPressed(KEY_X);
++        bool lPressed      = input.isPressed(KEY_L);
++        bool rPressed      = input.isPressed(KEY_R);
+         bool selectPressed = input.isPressed(KEY_SELECT);
+         bool startPressed  = input.isPressed(KEY_START);
+ 
+@@ -340,6 +357,81 @@ int main() {
+                              aPressed, questMgr, playerState);
+         }
+ 
++        //----------------------------------------------------------------------
++        // Combat (Milestone 8) — suspended while talking or shopping,
++        // exactly like movement (`canMove` above already excludes both).
++        //----------------------------------------------------------------------
++        combatMessageTimer = combatMessageTimer > 0.0f ? combatMessageTimer - dt : 0.0f;
++
++        bool interactionSuspended = npcs.isDialogueOpen() || shop.isOpen();
++
++        // Enemy AI/contact-damage always ticks — an enemy mid-bite
++        // shouldn't freeze just because a menu opened elsewhere. This is
++        // harmless even while suspended: the player's position is also
++        // frozen via `canMove` above, so a suspended enemy's distance to
++        // the player isn't changing either; this just keeps its animation
++        // timer and any in-progress bite-interval honest.
++        enemies.update(currentZone, player.getCenterX(), player.getCenterY(),
++                      dt, zones.getTileMap(), playerState);
++        enemies.updateMessageTimer(dt);
++
++        if (!interactionSuspended) {
++            AttackResult atkResult = enemies.tryAttack(
++                player.getCenterX(), player.getCenterY(),
++                player.getFacing(), xPressed, dt, playerState);
++            if (atkResult == AttackResult::KILLED) {
++                combatMessage      = enemies.getLastMessage();
++                combatMessageTimer = COMBAT_MESSAGE_DURATION;
++            }
++
++            // Consumables: L = Healing Herb, R = Simple Potion. Dedicated
++            // keys, no menu screen at all — the simplest implementation
++            // that satisfies "no inventory menus if avoidable" literally.
++            if (lPressed) {
++                bool used = playerState.useConsumable(static_cast<u8>(ItemID::HEALING_HERB));
++                combatMessage      = used ? "Used Healing Herb. +20 HP" : "No Healing Herb.";
++                combatMessageTimer = COMBAT_MESSAGE_DURATION;
++            }
++            if (rPressed) {
++                bool used = playerState.useConsumable(static_cast<u8>(ItemID::SIMPLE_POTION));
++                combatMessage      = used ? "Used Simple Potion. +50 HP" : "No Simple Potion.";
++                combatMessageTimer = COMBAT_MESSAGE_DURATION;
++            }
++        }
++
++        // Death/respawn (Feature 8). Checked once per frame, after all
++        // of this frame's damage sources (enemy contact damage above)
++        // have been applied — so a killing blow and the respawn it
++        // triggers always happen within the same frame, never delayed.
++        if (playerState.isDead()) {
++            const ZoneDef&    townDef = getZoneDef(ZoneID::TOWN);
++            const SpawnPoint& townSp  = townDef.spawns[0];
++
++            if (currentZone != ZoneID::TOWN) {
++                zones.forceLoadZone(ZoneID::TOWN, 0);
++                worldObjects.onZoneLoaded(ZoneID::TOWN, zones.getTileMap());
++                currentZone = ZoneID::TOWN;
++            }
++            player.setPosition(townSp.spawn_px, townSp.spawn_py);
++            playerState.hp = playerState.maxHp;
++
++            // Small gold loss on death, per the assignment's optional
++            // suggestion — discourages treating death as a non-event
++            // without it being punishing enough to need a real penalty
++            // system (no equipment durability, no item loss — just a
++            // flat, small, clamped-at-0 gold cost).
++            constexpr u32 DEATH_GOLD_LOSS = 5;
++            playerState.gold = (playerState.gold > DEATH_GOLD_LOSS)
++                              ? playerState.gold - DEATH_GOLD_LOSS : 0;
++
++            enemies.respawnAll();
++
++            combatMessage      = "You were defeated. Returned to Town.";
++            combatMessageTimer = COMBAT_MESSAGE_DURATION;
++            LOG("Player died — respawned at Town, lost %u gold, all enemies respawned",
++                DEATH_GOLD_LOSS);
++        }
++
+         questMgr.update(currentZone, player.getCenterX(), player.getCenterY());
+ 
+         npcs.update(currentZone,
+@@ -379,6 +471,10 @@ int main() {
+                                  gatherNodes.getNodeCount(),
+                                  currentZone, camera);
+ 
++        renderer.drawEnemies(enemies.getEnemies(),
++                             enemies.getEnemyCount(),
++                             currentZone, camera);
++
+         renderer.drawNPCs(npcs, currentZone, camera);
+ 
+         if (questMgr.markerVisible(currentZone)) {
+@@ -402,8 +498,15 @@ int main() {
+                                   zones.getNameAlpha());
+         }
+ 
+-        // Save/load status message
+-        if (statusTimer > 0.0f && statusMessage != nullptr) {
++        // Save/load status message, or combat feedback if more recent —
++        // reuses the existing message/timer banner rather than adding a
++        // second on-screen text system, per the Milestone 8 assignment's
++        // explicit instruction to reuse the project's message/timer
++        // pattern instead of building new UI.
++        if (combatMessageTimer > 0.0f && combatMessage != nullptr) {
++            float alpha = (combatMessageTimer < 0.5f) ? combatMessageTimer / 0.5f : 1.0f;
++            renderer.drawStatusMessage(combatMessage, alpha);
++        } else if (statusTimer > 0.0f && statusMessage != nullptr) {
+             float alpha = (statusTimer < 0.5f) ? statusTimer / 0.5f : 1.0f;
+             renderer.drawStatusMessage(statusMessage, alpha);
+         }
+@@ -420,9 +523,11 @@ int main() {
+                 displayText = worldObjects.getLastMessage();
+             } else if (gatherNodes.hasMessage()) {
+                 displayText = gatherNodes.getLastMessage();
++            } else if (enemies.hasMessage()) {
++                displayText = enemies.getLastMessage();
+             }
+-            renderer.drawQuestHUD(displayText, playerState.gold,
+-                                  playerState.wood, playerState.rope);
++            renderer.drawQuestHUD(displayText, playerState.hp, playerState.maxHp,
++                                  playerState.gold, playerState.wood, playerState.rope);
+         }
+ 
+         renderer.endFrame();
+diff --git a/source/quest/PlayerState.h b/source/quest/PlayerState.h
+index 5cefab1..0c14ea5 100644
+--- a/source/quest/PlayerState.h
++++ b/source/quest/PlayerState.h
+@@ -1,7 +1,7 @@
+ #pragma once
+ 
+ //-----------------------------------------------------------------------------
+-// PlayerState.h  (Milestone 7 — Economy Loop: adds Inventory)
++// PlayerState.h  (Milestone 8 — Combat Foundation: adds HP)
+ //
+ // Additions:
+ //   wood  — used to repair bridges and clear fallen trees
+@@ -9,10 +9,13 @@
+ //   inventory — fixed 8-slot bag for shop/quest items (see Inventory.h).
+ //               Deliberately separate from wood/rope: those stay dedicated
+ //               counters used by the repair/gathering systems untouched
+-//               since Milestone 4/6. Unifying them into Inventory would
+-//               touch working code for no benefit toward Milestone 7's
+-//               goal (prove Gather → Store → Spend → Reward → Save → Load
+-//               for shop/quest items specifically).
++//               since Milestone 4/6.
++//   hp / maxHp — player health (Milestone 8). u16 per the assignment's
++//               recommendation, even though a single u8 (0-255) would
++//               comfortably cover 100/100 — u16 leaves room for a future
++//               leveling system to raise maxHp past 255 without another
++//               field-width change. Two extra bytes is not worth
++//               optimizing away for that headroom.
+ //
+ // PlayerState is a plain struct: no custom constructor. New-game starting
+ // values are set explicitly via init() rather than baked into a constructor,
+@@ -24,15 +27,18 @@
+ // nodes in Forest, so a fresh game requires gathering before repairing the
+ // bridge (5 wood), ladder (3 rope), or fallen tree (8 wood).
+ //
++// Starting HP is 100/100 per the Milestone 8 assignment.
++//
+ // Save-friendly: struct embeds into SaveData verbatim. All fields are
+ // plain integer types or the POD Inventory struct. No pointers. No
+ // dynamic allocation.
+ //
+-// Memory: 24 bytes (8 bytes original fields + 16 bytes inventory).
++// Memory: 28 bytes (24 bytes from Milestone 7 + 4 bytes for hp/maxHp).
+ //-----------------------------------------------------------------------------
+ 
+ #include "../../include/types.h"
+ #include "Inventory.h"
++#include "../items/ItemDef.h"
+ 
+ struct PlayerState {
+     u32       gold;
+@@ -40,6 +46,8 @@ struct PlayerState {
+     u8        rope;
+     u8        pad[2];   // align to 4 bytes
+     Inventory inventory;
++    u16       hp;
++    u16       maxHp;
+ 
+     // Set new-game starting values. Call once when starting a fresh game
+     // (not on load — SaveManager::apply() overwrites these fields directly
+@@ -51,6 +59,8 @@ struct PlayerState {
+         pad[0] = 0;
+         pad[1] = 0;
+         inventory.init();
++        maxHp  = 100;
++        hp     = maxHp;
+     }
+ 
+     void addGold(u32 amount)  { gold += amount; }
+@@ -67,4 +77,39 @@ struct PlayerState {
+         int sum = static_cast<int>(rope) + static_cast<int>(amount);
+         rope = static_cast<u8>(sum > 255 ? 255 : sum);
+     }
++
++    // Heal, clamped to maxHp — same clamp-not-wrap precedent as
++    // addWood/addRope above. Used by both consumable items (Healing
++    // Herb, Simple Potion) and the Milestone 8 death/respawn flow
++    // (restores full HP).
++    void heal(u16 amount) {
++        u32 sum = static_cast<u32>(hp) + static_cast<u32>(amount);
++        hp = static_cast<u16>(sum > maxHp ? maxHp : sum);
++    }
++
++    // Apply damage, clamped at 0 (u16 would otherwise wrap below 0 the
++    // same way u8 wood/rope could wrap above 255 — same risk, same fix).
++    void damage(u16 amount) {
++        hp = (amount >= hp) ? 0 : static_cast<u16>(hp - amount);
++    }
++
++    bool isDead() const { return hp == 0; }
++
++    // Use one of `item_id` as a healing consumable: removes it from the
++    // inventory and applies its ItemDef::heal_amount via heal(). All-or-
++    // nothing — if the player doesn't have the item, or the item has no
++    // heal_amount (it isn't a healing consumable), nothing changes and
++    // this returns false. This is deliberately just inventory.removeItem()
++    // + heal() composed together rather than a separate "consumable use"
++    // system — Healing Herb and Simple Potion are the only two usable
++    // items in Milestone 8, and a dedicated system for two items would
++    // be exactly the kind of speculative architecture the project
++    // philosophy argues against.
++    bool useConsumable(u8 item_id) {
++        const ItemDef& def = getItemDef(item_id);
++        if (def.heal_amount == 0) return false; // not a healing item
++        if (!inventory.removeItem(item_id, 1))  return false; // don't have one
++        heal(def.heal_amount);
++        return true;
++    }
+ };
+diff --git a/source/render/Renderer.cpp b/source/render/Renderer.cpp
+index 52d3d0b..7224f10 100644
+--- a/source/render/Renderer.cpp
++++ b/source/render/Renderer.cpp
+@@ -624,6 +624,50 @@ void Renderer::drawGatherNodes(const GatherNode* nodes, int count,
+     }
+ }
+ 
++//-----------------------------------------------------------------------------
++// drawEnemies  (Milestone 8 — Combat Foundation)
++//
++// Placeholder visual, same fallback-colored-rect philosophy as every
++// other entity in this project: dark gray body distinct from the blue
++// NPCs and red player, a facing notch reusing drawDirectionalIndicator
++// (Enemy::anim is the same AnimState struct already used by Player/NPC,
++// so this falls out for free), and a thin HP sliver above the sprite —
++// the simplest possible "enemy health bar" that doesn't need a second
++// UI surface.
++//-----------------------------------------------------------------------------
++void Renderer::drawEnemies(const Enemy* enemies, int count,
++                           ZoneID currentZone, const Camera& cam) {
++    constexpr float ENEMY_W = 16.0f;
++    constexpr float ENEMY_H = 16.0f;
++
++    for (int i = 0; i < count; i++) {
++        const Enemy& e = enemies[i];
++        if (!e.active)             continue;
++        if (e.zone != currentZone) continue;
++
++        float sx = e.pos_x - static_cast<float>(cam.getX());
++        float sy = e.pos_y - static_cast<float>(cam.getY());
++
++        if (sx < -TILE_SIZE || sx > SCREEN_TOP_W + TILE_SIZE) continue;
++        if (sy < -TILE_SIZE || sy > SCREEN_TOP_H + TILE_SIZE) continue;
++
++        // Body — dark gray, distinct from player (red) and NPCs (blue).
++        drawColorRect(sx, sy, ENEMY_W, ENEMY_H, C2D_Color32(70, 70, 75, 255));
++        drawColorRect(sx + 5, sy + 5, 4, 4, C2D_Color32(220, 60, 60, 255)); // red eye
++        drawDirectionalIndicator(sx, sy, ENEMY_W, ENEMY_H, e.anim.facing, e.anim.frame,
++                                 C2D_Color32(20, 20, 22, 255));
++
++        // HP sliver above the sprite — full width = full HP, scales down
++        // as the enemy takes damage. Hidden entirely at full HP so an
++        // undamaged enemy doesn't show a redundant always-full bar.
++        if (e.hp < e.maxHp) {
++            float pct = static_cast<float>(e.hp) / static_cast<float>(e.maxHp);
++            drawColorRect(sx, sy - 5.0f, ENEMY_W, 3.0f, C2D_Color32(40, 10, 10, 200));
++            drawColorRect(sx, sy - 5.0f, ENEMY_W * pct, 3.0f, C2D_Color32(200, 50, 50, 255));
++        }
++    }
++}
++
+ //-----------------------------------------------------------------------------
+ // drawWorldObjects
+ // Placeholder visuals for world objects. No sprites required.
+@@ -744,7 +788,8 @@ void Renderer::drawTitleScreenBottom() {
+ }
+ 
+ //-----------------------------------------------------------------------------
+-void Renderer::drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rope) {
++void Renderer::drawQuestHUD(const char* objectiveText, u16 hp, u16 maxHp,
++                            u32 gold, u8 wood, u8 rope) {
+     C2D_SceneBegin(m_botTarget);
+     C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
+ 
+@@ -760,6 +805,20 @@ void Renderer::drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rop
+                  10.0f, 14.0f, 0.7f, 0.5f, 0.5f,
+                  C2D_Color32(180, 180, 220, 255));
+ 
++    // HP — top-right of the header bar, simple "HP: 100/100" text per
++    // the Milestone 8 assignment's own suggestion (no graphical bar
++    // needed when text is simpler). Tinted red when low so a glance is
++    // enough to notice danger without reading the numbers.
++    char hpBuf[24];
++    snprintf(hpBuf, sizeof(hpBuf), "HP: %u/%u", hp, maxHp);
++    C2D_Text hpText;
++    C2D_TextParse(&hpText, m_textBuf, hpBuf);
++    C2D_TextOptimize(&hpText);
++    bool lowHp = (maxHp > 0) && (hp <= maxHp / 4);
++    u32 hpColor = lowHp ? C2D_Color32(255, 90, 90, 255) : C2D_Color32(180, 220, 180, 255);
++    C2D_DrawText(&hpText, C2D_WithColor | C2D_AtBaseline,
++                 220.0f, 14.0f, 0.7f, 0.5f, 0.5f, hpColor);
++
+     // Objective
+     if (objectiveText != nullptr) {
+         C2D_Text objText;
+diff --git a/source/render/Renderer.h b/source/render/Renderer.h
+index 97145a8..8418212 100644
+--- a/source/render/Renderer.h
++++ b/source/render/Renderer.h
+@@ -25,6 +25,7 @@
+ #include "../world/TileMap.h"
+ #include "../world/WorldObject.h"
+ #include "../world/GatherNode.h"
++#include "../combat/Enemy.h"
+ #include "../world/Shop.h"
+ #include "../npc/NPC.h"
+ #include "../npc/NPCManager.h"
+@@ -93,9 +94,17 @@ public:
+     void drawGatherNodes(const GatherNode* nodes, int count,
+                         ZoneID currentZone, const Camera& cam);
+ 
+-    // Draw quest objective text, gold, and resources on bottom screen.
++    // Draw enemies (Milestone 8) in the current zone. Drawn distinctly
++    // from NPCs/gather nodes (red, with a small HP sliver) so the player
++    // can tell at a glance that something is hostile. enemies/count from
++    // EnemyManager::getEnemies() / getEnemyCount().
++    void drawEnemies(const Enemy* enemies, int count,
++                     ZoneID currentZone, const Camera& cam);
++
++    // Draw quest objective text, HP, gold, and resources on bottom screen.
+     // objectiveText: nullptr = show "No active quest".
+-    void drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rope);
++    void drawQuestHUD(const char* objectiveText, u16 hp, u16 maxHp,
++                      u32 gold, u8 wood, u8 rope);
+ 
+     // Draw a centered status message on the top screen (e.g. "Game Saved").
+     // alpha [0,1] for fade in/out. Call after world geometry, before endFrame.
+diff --git a/source/save/SaveData.h b/source/save/SaveData.h
+index 1901bba..0bbbf4b 100644
+--- a/source/save/SaveData.h
++++ b/source/save/SaveData.h
+@@ -21,11 +21,23 @@
+ //   explicitly named so the remaining reserved headroom stays visible
+ //   rather than silently shrinking). Total block size is unchanged at
+ //   64 bytes, so sizeof(SaveData) does not change — only the meaning of
+-//   those 64 bytes does. This is a hard version break, not a migration:
+-//   consistent with how every prior version bump in this project has
+-//   been handled (no migration code exists anywhere; validate() already
++//   those 64 bytes does.
++//
++//   Milestone 8 bumps SAVE_VERSION 6 -> 7: adds hp/maxHp (4 bytes —
++//   u16 each, per the Milestone 8 assignment's recommendation). To keep
++//   sizeof(SaveData) unchanged, reserved_skills shrinks from 32 to 28
++//   bytes (still generously sized for a future skill-XP system; the 4
++//   bytes weren't otherwise allocated to anything HP-shaped, so this
++//   was the least disruptive place to take them from — borrowing from
++//   reserved_reputation/titles/crafting/housing would be a category
++//   mismatch, since none of those are player-vitals-shaped either).
++//   This is, as with every prior version bump in this project, a hard
++//   break, not a migration — see the existing policy below.
++//
++//   Every prior version bump in this project has been handled the same
++//   way (no migration code exists anywhere; validate() already
+ //   rejects mismatched versions and the caller falls back to a new
+-//   game). Pre-Milestone-7 saves (version 5 and earlier) will be
++//   game). Pre-Milestone-8 saves (version 6 and earlier) will be
+ //   rejected and the player will start a fresh game.
+ //
+ // FUTURE EXTENSION:
+@@ -49,7 +61,7 @@
+ #include "../quest/QuestManager.h"
+ #include <cstddef>  // offsetof
+ 
+-static constexpr u16 SAVE_VERSION   = 6;     // bump on every layout change
++static constexpr u16 SAVE_VERSION   = 7;     // bump on every layout change
+ static constexpr u32 SAVE_MAGIC     = 0x4C4F4100;  // "LOA\0"
+ 
+ //-----------------------------------------------------------------------------
+@@ -109,6 +121,12 @@ struct SaveData {
+     u8  rope;
+     u8  resource_pad[2];
+ 
++    //-------------------------------------------------------------------------
++    // Player health (4 bytes) — Milestone 8
++    //-------------------------------------------------------------------------
++    u16 hp;
++    u16 maxHp;
++
+     //-------------------------------------------------------------------------
+     // Quest states (32 bytes) — MAX_QUESTS = 16 entries × 2 bytes each
+     //-------------------------------------------------------------------------
+@@ -137,7 +155,10 @@ struct SaveData {
+     // Replace with real structs when those milestones arrive.
+     // Bump SAVE_VERSION when any block changes.
+     //-------------------------------------------------------------------------
+-    u8  reserved_skills[32];       // Future: skill XP levels
++    u8  reserved_skills[28];       // Future: skill XP levels (4 bytes
++                                    // donated to hp/maxHp in Milestone 8 —
++                                    // was 32 bytes, see version-history
++                                    // comment above for why this block)
+     u8  reserved_reputation[16];   // Future: faction reputation
+     u8  reserved_titles[8];        // Future: unlocked title bitfield
+     u8  reserved_crafting[16];     // Future: crafting unlock flags
+diff --git a/source/save/SaveManager.cpp b/source/save/SaveManager.cpp
+index 95df581..06c7631 100644
+--- a/source/save/SaveManager.cpp
++++ b/source/save/SaveManager.cpp
+@@ -38,6 +38,8 @@ void SaveManager::gather(SaveData&                 out,
+     out.gold = playerState.gold;
+     out.wood = playerState.wood;
+     out.rope = playerState.rope;
++    out.hp     = playerState.hp;
++    out.maxHp  = playerState.maxHp;
+ 
+     // Inventory (Milestone 7) — POD copy, slot order preserved.
+     for (int i = 0; i < INVENTORY_SLOTS; i++) {
+@@ -95,6 +97,8 @@ void SaveManager::apply(const SaveData&      sd,
+     playerState.gold = sd.gold;
+     playerState.wood = sd.wood;
+     playerState.rope = sd.rope;
++    playerState.hp     = sd.hp;
++    playerState.maxHp  = sd.maxHp;
+ 
+     // 5b. Restore inventory (Milestone 7)
+     for (int i = 0; i < INVENTORY_SLOTS; i++) {
+@@ -107,9 +111,9 @@ void SaveManager::apply(const SaveData&      sd,
+         questMgr.setStateFromSave(static_cast<u8>(i), status, sd.quest_current_step[i]);
+     }
+ 
+-    LOG("SaveManager: loaded — zone=%d pos=(%.0f,%.0f) time=%d gold=%u wood=%u rope=%u",
++    LOG("SaveManager: loaded — zone=%d pos=(%.0f,%.0f) time=%d gold=%u wood=%u rope=%u hp=%u/%u",
+         sd.zone_id, sd.player_x, sd.player_y, sd.total_minutes,
+-        sd.gold, sd.wood, sd.rope);
++        sd.gold, sd.wood, sd.rope, sd.hp, sd.maxHp);
+ }
+ 
+ //-----------------------------------------------------------------------------
+diff --git a/source/world/ZoneManager.cpp b/source/world/ZoneManager.cpp
+index fa59a4b..527c1b7 100644
+--- a/source/world/ZoneManager.cpp
++++ b/source/world/ZoneManager.cpp
+@@ -25,6 +25,15 @@ void ZoneManager::loadZone(ZoneID id, u8 spawnIndex) {
+     (void)spawnIndex; // spawn point applied by caller
+ }
+ 
++void ZoneManager::forceLoadZone(ZoneID id, u8 spawnIndex) {
++    // Abandon any in-flight transition first — see header comment for
++    // why this matters and loadZone() alone does not do this.
++    m_fadeState       = FadeState::NONE;
++    m_fadeAlpha       = 0.0f;
++    m_transitionReady = false;
++    loadZone(id, spawnIndex);
++}
++
+ void ZoneManager::update(int playerTileX, int playerTileY, float dt) {
+     // Advance name banner timer
+     if (m_nameTimer > 0.0f) {
+diff --git a/source/world/ZoneManager.h b/source/world/ZoneManager.h
+index 99631c8..7f581ae 100644
+--- a/source/world/ZoneManager.h
++++ b/source/world/ZoneManager.h
+@@ -40,6 +40,18 @@ public:
+     // Load a zone immediately (no fade). Used for initial game start.
+     void loadZone(ZoneID id, u8 spawnIndex);
+ 
++    // Immediate zone load that ALSO resets the fade state machine to
++    // NONE, abandoning any in-flight transition (Milestone 8 — used only
++    // by the death/respawn flow in main.cpp). loadZone() alone is
++    // documented for "initial game start", when no transition could be
++    // mid-flight; calling it instead of this during gameplay could leave
++    // m_fadeState in FADE_OUT/LOADING from an unrelated transition while
++    // m_currentZone/m_tileMap have already been silently swapped underneath
++    // it by the death teleport. This method exists specifically to avoid
++    // that narrow but real edge case (dying from contact damage in the
++    // same frame the player steps onto a transition tile).
++    void forceLoadZone(ZoneID id, u8 spawnIndex);
++
+     // Call every frame. tileX/tileY = player's current center tile.
+     // dt used to advance the fade animation.
+     void update(int playerTileX, int playerTileY, float dt);

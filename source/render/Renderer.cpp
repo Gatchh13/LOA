@@ -625,6 +625,50 @@ void Renderer::drawGatherNodes(const GatherNode* nodes, int count,
 }
 
 //-----------------------------------------------------------------------------
+// drawEnemies  (Milestone 8 — Combat Foundation)
+//
+// Placeholder visual, same fallback-colored-rect philosophy as every
+// other entity in this project: dark gray body distinct from the blue
+// NPCs and red player, a facing notch reusing drawDirectionalIndicator
+// (Enemy::anim is the same AnimState struct already used by Player/NPC,
+// so this falls out for free), and a thin HP sliver above the sprite —
+// the simplest possible "enemy health bar" that doesn't need a second
+// UI surface.
+//-----------------------------------------------------------------------------
+void Renderer::drawEnemies(const Enemy* enemies, int count,
+                           ZoneID currentZone, const Camera& cam) {
+    constexpr float ENEMY_W = 16.0f;
+    constexpr float ENEMY_H = 16.0f;
+
+    for (int i = 0; i < count; i++) {
+        const Enemy& e = enemies[i];
+        if (!e.active)             continue;
+        if (e.zone != currentZone) continue;
+
+        float sx = e.pos_x - static_cast<float>(cam.getX());
+        float sy = e.pos_y - static_cast<float>(cam.getY());
+
+        if (sx < -TILE_SIZE || sx > SCREEN_TOP_W + TILE_SIZE) continue;
+        if (sy < -TILE_SIZE || sy > SCREEN_TOP_H + TILE_SIZE) continue;
+
+        // Body — dark gray, distinct from player (red) and NPCs (blue).
+        drawColorRect(sx, sy, ENEMY_W, ENEMY_H, C2D_Color32(70, 70, 75, 255));
+        drawColorRect(sx + 5, sy + 5, 4, 4, C2D_Color32(220, 60, 60, 255)); // red eye
+        drawDirectionalIndicator(sx, sy, ENEMY_W, ENEMY_H, e.anim.facing, e.anim.frame,
+                                 C2D_Color32(20, 20, 22, 255));
+
+        // HP sliver above the sprite — full width = full HP, scales down
+        // as the enemy takes damage. Hidden entirely at full HP so an
+        // undamaged enemy doesn't show a redundant always-full bar.
+        if (e.hp < e.maxHp) {
+            float pct = static_cast<float>(e.hp) / static_cast<float>(e.maxHp);
+            drawColorRect(sx, sy - 5.0f, ENEMY_W, 3.0f, C2D_Color32(40, 10, 10, 200));
+            drawColorRect(sx, sy - 5.0f, ENEMY_W * pct, 3.0f, C2D_Color32(200, 50, 50, 255));
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
 // drawWorldObjects
 // Placeholder visuals for world objects. No sprites required.
 //
@@ -744,7 +788,8 @@ void Renderer::drawTitleScreenBottom() {
 }
 
 //-----------------------------------------------------------------------------
-void Renderer::drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rope) {
+void Renderer::drawQuestHUD(const char* objectiveText, u16 hp, u16 maxHp,
+                            u32 gold, u8 wood, u8 rope) {
     C2D_SceneBegin(m_botTarget);
     C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
 
@@ -759,6 +804,20 @@ void Renderer::drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rop
     C2D_DrawText(&headerText, C2D_WithColor | C2D_AtBaseline,
                  10.0f, 14.0f, 0.7f, 0.5f, 0.5f,
                  C2D_Color32(180, 180, 220, 255));
+
+    // HP — top-right of the header bar, simple "HP: 100/100" text per
+    // the Milestone 8 assignment's own suggestion (no graphical bar
+    // needed when text is simpler). Tinted red when low so a glance is
+    // enough to notice danger without reading the numbers.
+    char hpBuf[24];
+    snprintf(hpBuf, sizeof(hpBuf), "HP: %u/%u", hp, maxHp);
+    C2D_Text hpText;
+    C2D_TextParse(&hpText, m_textBuf, hpBuf);
+    C2D_TextOptimize(&hpText);
+    bool lowHp = (maxHp > 0) && (hp <= maxHp / 4);
+    u32 hpColor = lowHp ? C2D_Color32(255, 90, 90, 255) : C2D_Color32(180, 220, 180, 255);
+    C2D_DrawText(&hpText, C2D_WithColor | C2D_AtBaseline,
+                 220.0f, 14.0f, 0.7f, 0.5f, 0.5f, hpColor);
 
     // Objective
     if (objectiveText != nullptr) {

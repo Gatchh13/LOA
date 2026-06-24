@@ -21,11 +21,23 @@
 //   explicitly named so the remaining reserved headroom stays visible
 //   rather than silently shrinking). Total block size is unchanged at
 //   64 bytes, so sizeof(SaveData) does not change — only the meaning of
-//   those 64 bytes does. This is a hard version break, not a migration:
-//   consistent with how every prior version bump in this project has
-//   been handled (no migration code exists anywhere; validate() already
+//   those 64 bytes does.
+//
+//   Milestone 8 bumps SAVE_VERSION 6 -> 7: adds hp/maxHp (4 bytes —
+//   u16 each, per the Milestone 8 assignment's recommendation). To keep
+//   sizeof(SaveData) unchanged, reserved_skills shrinks from 32 to 28
+//   bytes (still generously sized for a future skill-XP system; the 4
+//   bytes weren't otherwise allocated to anything HP-shaped, so this
+//   was the least disruptive place to take them from — borrowing from
+//   reserved_reputation/titles/crafting/housing would be a category
+//   mismatch, since none of those are player-vitals-shaped either).
+//   This is, as with every prior version bump in this project, a hard
+//   break, not a migration — see the existing policy below.
+//
+//   Every prior version bump in this project has been handled the same
+//   way (no migration code exists anywhere; validate() already
 //   rejects mismatched versions and the caller falls back to a new
-//   game). Pre-Milestone-7 saves (version 5 and earlier) will be
+//   game). Pre-Milestone-8 saves (version 6 and earlier) will be
 //   rejected and the player will start a fresh game.
 //
 // FUTURE EXTENSION:
@@ -49,7 +61,7 @@
 #include "../quest/QuestManager.h"
 #include <cstddef>  // offsetof
 
-static constexpr u16 SAVE_VERSION   = 6;     // bump on every layout change
+static constexpr u16 SAVE_VERSION   = 7;     // bump on every layout change
 static constexpr u32 SAVE_MAGIC     = 0x4C4F4100;  // "LOA\0"
 
 //-----------------------------------------------------------------------------
@@ -110,6 +122,12 @@ struct SaveData {
     u8  resource_pad[2];
 
     //-------------------------------------------------------------------------
+    // Player health (4 bytes) — Milestone 8
+    //-------------------------------------------------------------------------
+    u16 hp;
+    u16 maxHp;
+
+    //-------------------------------------------------------------------------
     // Quest states (32 bytes) — MAX_QUESTS = 16 entries × 2 bytes each
     //-------------------------------------------------------------------------
     u8  quest_status[MAX_QUESTS];        // QuestStatus cast to u8
@@ -137,7 +155,10 @@ struct SaveData {
     // Replace with real structs when those milestones arrive.
     // Bump SAVE_VERSION when any block changes.
     //-------------------------------------------------------------------------
-    u8  reserved_skills[32];       // Future: skill XP levels
+    u8  reserved_skills[28];       // Future: skill XP levels (4 bytes
+                                    // donated to hp/maxHp in Milestone 8 —
+                                    // was 32 bytes, see version-history
+                                    // comment above for why this block)
     u8  reserved_reputation[16];   // Future: faction reputation
     u8  reserved_titles[8];        // Future: unlocked title bitfield
     u8  reserved_crafting[16];     // Future: crafting unlock flags

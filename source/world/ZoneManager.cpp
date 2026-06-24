@@ -25,6 +25,15 @@ void ZoneManager::loadZone(ZoneID id, u8 spawnIndex) {
     (void)spawnIndex; // spawn point applied by caller
 }
 
+void ZoneManager::forceLoadZone(ZoneID id, u8 spawnIndex) {
+    // Abandon any in-flight transition first — see header comment for
+    // why this matters and loadZone() alone does not do this.
+    m_fadeState       = FadeState::NONE;
+    m_fadeAlpha       = 0.0f;
+    m_transitionReady = false;
+    loadZone(id, spawnIndex);
+}
+
 void ZoneManager::update(int playerTileX, int playerTileY, float dt) {
     // Advance name banner timer
     if (m_nameTimer > 0.0f) {

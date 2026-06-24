@@ -25,6 +25,7 @@
 #include "../world/TileMap.h"
 #include "../world/WorldObject.h"
 #include "../world/GatherNode.h"
+#include "../combat/Enemy.h"
 #include "../world/Shop.h"
 #include "../npc/NPC.h"
 #include "../npc/NPCManager.h"
@@ -93,9 +94,17 @@ public:
     void drawGatherNodes(const GatherNode* nodes, int count,
                         ZoneID currentZone, const Camera& cam);
 
-    // Draw quest objective text, gold, and resources on bottom screen.
+    // Draw enemies (Milestone 8) in the current zone. Drawn distinctly
+    // from NPCs/gather nodes (red, with a small HP sliver) so the player
+    // can tell at a glance that something is hostile. enemies/count from
+    // EnemyManager::getEnemies() / getEnemyCount().
+    void drawEnemies(const Enemy* enemies, int count,
+                     ZoneID currentZone, const Camera& cam);
+
+    // Draw quest objective text, HP, gold, and resources on bottom screen.
     // objectiveText: nullptr = show "No active quest".
-    void drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rope);
+    void drawQuestHUD(const char* objectiveText, u16 hp, u16 maxHp,
+                      u32 gold, u8 wood, u8 rope);
 
     // Draw a centered status message on the top screen (e.g. "Game Saved").
     // alpha [0,1] for fade in/out. Call after world geometry, before endFrame.

@@ -40,6 +40,18 @@ public:
     // Load a zone immediately (no fade). Used for initial game start.
     void loadZone(ZoneID id, u8 spawnIndex);
 
+    // Immediate zone load that ALSO resets the fade state machine to
+    // NONE, abandoning any in-flight transition (Milestone 8 — used only
+    // by the death/respawn flow in main.cpp). loadZone() alone is
+    // documented for "initial game start", when no transition could be
+    // mid-flight; calling it instead of this during gameplay could leave
+    // m_fadeState in FADE_OUT/LOADING from an unrelated transition while
+    // m_currentZone/m_tileMap have already been silently swapped underneath
+    // it by the death teleport. This method exists specifically to avoid
+    // that narrow but real edge case (dying from contact damage in the
+    // same frame the player steps onto a transition tile).
+    void forceLoadZone(ZoneID id, u8 spawnIndex);
+
     // Call every frame. tileX/tileY = player's current center tile.
     // dt used to advance the fade animation.
     void update(int playerTileX, int playerTileY, float dt);

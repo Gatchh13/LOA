@@ -1,23 +1,27 @@
 //-----------------------------------------------------------------------------
-// main.cpp  (Milestone 7 — Economy Loop)
+// main.cpp  (Milestone 8 — Combat Foundation)
 //
-// New over Milestone 6:
-//   - Shop system: pressing Y while talking to Mira opens her stock list
-//     (ShopUI, see source/world/Shop.h). Up/Down selects, A buys
-//     (deducts gold, adds to inventory), B leaves. Reuses the existing
-//     dialogue-open/closed flow rather than adding a new GameState.
-//   - Inventory: PlayerState now owns an 8-slot Inventory (see
-//     source/quest/Inventory.h). Populated by shop purchases and quest
-//     rewards. Persisted in SaveData (version bumped 5 -> 6).
-//   - Quest rewards can now include an item alongside gold (see
-//     QuestDef.h's QuestReward) — "The Missing Package" grants Mira's
-//     Token on completion, proving the reward path for a non-purchasable
-//     item.
+// New over Milestone 7:
+//   - Player HP (PlayerState.hp/maxHp, 100/100 start). Displayed on the
+//     bottom-screen HUD as simple "HP: 100/100" text.
+//   - Forest Wolf (EnemyManager, see source/combat/) — one enemy, an
+//     Idle/Chase/Attack/Return state machine, contact damage on the
+//     player, melee combat from the player (X), guaranteed Wolf Pelt
+//     loot on death.
+//   - Consumables: L uses a Healing Herb (+20 HP), R uses a Simple
+//     Potion (+50 HP). Dedicated keys, no menu screen — the simplest
+//     implementation that satisfies "no inventory menus if avoidable."
+//   - Death/respawn: HP reaching 0 teleports the player to the Town
+//     spawn point at full HP, costs a small flat amount of gold, and
+//     respawns all enemies. No death screen.
 //
 // Button map (gameplay):
 //   D-Pad / Circle Pad : move
 //   A                  : interact (NPC, world object, gather node) / buy (in shop)
 //   B                  : close dialogue / leave shop
+//   X                  : melee attack
+//   L                  : use Healing Herb (+20 HP)
+//   R                  : use Simple Potion (+50 HP)
 //   Y                  : open shop (only while talking to Mira)
 //   SELECT             : save
 //   START              : load
@@ -43,6 +47,7 @@
 #include "world/WorldObjectManager.h"
 #include "world/GatherNodeManager.h"
 #include "world/Shop.h"
+#include "combat/EnemyManager.h"
 #include "render/Camera.h"
 #include "render/Renderer.h"
 #include "entities/Player.h"
@@ -84,6 +89,7 @@ int main() {
     NPCManager         npcs;
     WorldObjectManager worldObjects;
     GatherNodeManager  gatherNodes;
+    EnemyManager       enemies;
     ShopUI             shop;
     Player             player(0.0f, 0.0f);
     Camera              camera;
@@ -105,6 +111,13 @@ int main() {
     float       shopMessageTimer = 0.0f;
     static constexpr float SHOP_MESSAGE_DURATION = 2.0f;
 
+    // Combat feedback message state (attack/consumable results,
+    // Milestone 8) — same message+timer pattern as everything else in
+    // this file, shown via drawStatusMessage like the save/load banner.
+    const char* combatMessage      = nullptr;
+    float       combatMessageTimer = 0.0f;
+    static constexpr float COMBAT_MESSAGE_DURATION = 2.0f;
+
     //--------------------------------------------------------------------------
     // startGame — runs once, when the player picks New Game or Continue on
     // the title screen. Everything in here used to run unconditionally
@@ -118,6 +131,7 @@ int main() {
         zones.loadZone(ZoneID::TOWN, 0);
         worldObjects.init(zones.getTileMap());
         gatherNodes.init();
+        enemies.init();
         questMgr.init();
 
         // Determine start position
@@ -197,6 +211,9 @@ int main() {
         bool aPressed      = input.isPressed(KEY_A);
         bool bPressed      = input.isPressed(KEY_B);
         bool yPressed      = input.isPressed(KEY_Y);
+        bool xPressed      = input.isPressed(KEY_X);
+        bool lPressed      = input.isPressed(KEY_L);
+        bool rPressed      = input.isPressed(KEY_R);
         bool selectPressed = input.isPressed(KEY_SELECT);
         bool startPressed  = input.isPressed(KEY_START);
 
@@ -340,6 +357,81 @@ int main() {
                              aPressed, questMgr, playerState);
         }
 
+        //----------------------------------------------------------------------
+        // Combat (Milestone 8) — suspended while talking or shopping,
+        // exactly like movement (`canMove` above already excludes both).
+        //----------------------------------------------------------------------
+        combatMessageTimer = combatMessageTimer > 0.0f ? combatMessageTimer - dt : 0.0f;
+
+        bool interactionSuspended = npcs.isDialogueOpen() || shop.isOpen();
+
+        // Enemy AI/contact-damage always ticks — an enemy mid-bite
+        // shouldn't freeze just because a menu opened elsewhere. This is
+        // harmless even while suspended: the player's position is also
+        // frozen via `canMove` above, so a suspended enemy's distance to
+        // the player isn't changing either; this just keeps its animation
+        // timer and any in-progress bite-interval honest.
+        enemies.update(currentZone, player.getCenterX(), player.getCenterY(),
+                      dt, zones.getTileMap(), playerState);
+        enemies.updateMessageTimer(dt);
+
+        if (!interactionSuspended) {
+            AttackResult atkResult = enemies.tryAttack(
+                player.getCenterX(), player.getCenterY(),
+                player.getFacing(), xPressed, dt, playerState);
+            if (atkResult == AttackResult::KILLED) {
+                combatMessage      = enemies.getLastMessage();
+                combatMessageTimer = COMBAT_MESSAGE_DURATION;
+            }
+
+            // Consumables: L = Healing Herb, R = Simple Potion. Dedicated
+            // keys, no menu screen at all — the simplest implementation
+            // that satisfies "no inventory menus if avoidable" literally.
+            if (lPressed) {
+                bool used = playerState.useConsumable(static_cast<u8>(ItemID::HEALING_HERB));
+                combatMessage      = used ? "Used Healing Herb. +20 HP" : "No Healing Herb.";
+                combatMessageTimer = COMBAT_MESSAGE_DURATION;
+            }
+            if (rPressed) {
+                bool used = playerState.useConsumable(static_cast<u8>(ItemID::SIMPLE_POTION));
+                combatMessage      = used ? "Used Simple Potion. +50 HP" : "No Simple Potion.";
+                combatMessageTimer = COMBAT_MESSAGE_DURATION;
+            }
+        }
+
+        // Death/respawn (Feature 8). Checked once per frame, after all
+        // of this frame's damage sources (enemy contact damage above)
+        // have been applied — so a killing blow and the respawn it
+        // triggers always happen within the same frame, never delayed.
+        if (playerState.isDead()) {
+            const ZoneDef&    townDef = getZoneDef(ZoneID::TOWN);
+            const SpawnPoint& townSp  = townDef.spawns[0];
+
+            if (currentZone != ZoneID::TOWN) {
+                zones.forceLoadZone(ZoneID::TOWN, 0);
+                worldObjects.onZoneLoaded(ZoneID::TOWN, zones.getTileMap());
+                currentZone = ZoneID::TOWN;
+            }
+            player.setPosition(townSp.spawn_px, townSp.spawn_py);
+            playerState.hp = playerState.maxHp;
+
+            // Small gold loss on death, per the assignment's optional
+            // suggestion — discourages treating death as a non-event
+            // without it being punishing enough to need a real penalty
+            // system (no equipment durability, no item loss — just a
+            // flat, small, clamped-at-0 gold cost).
+            constexpr u32 DEATH_GOLD_LOSS = 5;
+            playerState.gold = (playerState.gold > DEATH_GOLD_LOSS)
+                              ? playerState.gold - DEATH_GOLD_LOSS : 0;
+
+            enemies.respawnAll();
+
+            combatMessage      = "You were defeated. Returned to Town.";
+            combatMessageTimer = COMBAT_MESSAGE_DURATION;
+            LOG("Player died — respawned at Town, lost %u gold, all enemies respawned",
+                DEATH_GOLD_LOSS);
+        }
+
         questMgr.update(currentZone, player.getCenterX(), player.getCenterY());
 
         npcs.update(currentZone,
@@ -379,6 +471,10 @@ int main() {
                                  gatherNodes.getNodeCount(),
                                  currentZone, camera);
 
+        renderer.drawEnemies(enemies.getEnemies(),
+                             enemies.getEnemyCount(),
+                             currentZone, camera);
+
         renderer.drawNPCs(npcs, currentZone, camera);
 
         if (questMgr.markerVisible(currentZone)) {
@@ -402,8 +498,15 @@ int main() {
                                   zones.getNameAlpha());
         }
 
-        // Save/load status message
-        if (statusTimer > 0.0f && statusMessage != nullptr) {
+        // Save/load status message, or combat feedback if more recent —
+        // reuses the existing message/timer banner rather than adding a
+        // second on-screen text system, per the Milestone 8 assignment's
+        // explicit instruction to reuse the project's message/timer
+        // pattern instead of building new UI.
+        if (combatMessageTimer > 0.0f && combatMessage != nullptr) {
+            float alpha = (combatMessageTimer < 0.5f) ? combatMessageTimer / 0.5f : 1.0f;
+            renderer.drawStatusMessage(combatMessage, alpha);
+        } else if (statusTimer > 0.0f && statusMessage != nullptr) {
             float alpha = (statusTimer < 0.5f) ? statusTimer / 0.5f : 1.0f;
             renderer.drawStatusMessage(statusMessage, alpha);
         }
@@ -420,9 +523,11 @@ int main() {
                 displayText = worldObjects.getLastMessage();
             } else if (gatherNodes.hasMessage()) {
                 displayText = gatherNodes.getLastMessage();
+            } else if (enemies.hasMessage()) {
+                displayText = enemies.getLastMessage();
             }
-            renderer.drawQuestHUD(displayText, playerState.gold,
-                                  playerState.wood, playerState.rope);
+            renderer.drawQuestHUD(displayText, playerState.hp, playerState.maxHp,
+                                  playerState.gold, playerState.wood, playerState.rope);
         }
 
         renderer.endFrame();

@@ -38,6 +38,8 @@ void SaveManager::gather(SaveData&                 out,
     out.gold = playerState.gold;
     out.wood = playerState.wood;
     out.rope = playerState.rope;
+    out.hp     = playerState.hp;
+    out.maxHp  = playerState.maxHp;
 
     // Inventory (Milestone 7) — POD copy, slot order preserved.
     for (int i = 0; i < INVENTORY_SLOTS; i++) {
@@ -95,6 +97,8 @@ void SaveManager::apply(const SaveData&      sd,
     playerState.gold = sd.gold;
     playerState.wood = sd.wood;
     playerState.rope = sd.rope;
+    playerState.hp     = sd.hp;
+    playerState.maxHp  = sd.maxHp;
 
     // 5b. Restore inventory (Milestone 7)
     for (int i = 0; i < INVENTORY_SLOTS; i++) {
@@ -107,9 +111,9 @@ void SaveManager::apply(const SaveData&      sd,
         questMgr.setStateFromSave(static_cast<u8>(i), status, sd.quest_current_step[i]);
     }
 
-    LOG("SaveManager: loaded — zone=%d pos=(%.0f,%.0f) time=%d gold=%u wood=%u rope=%u",
+    LOG("SaveManager: loaded — zone=%d pos=(%.0f,%.0f) time=%d gold=%u wood=%u rope=%u hp=%u/%u",
         sd.zone_id, sd.player_x, sd.player_y, sd.total_minutes,
-        sd.gold, sd.wood, sd.rope);
+        sd.gold, sd.wood, sd.rope, sd.hp, sd.maxHp);
 }
 
 //-----------------------------------------------------------------------------

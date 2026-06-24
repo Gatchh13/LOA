@@ -1,21 +1,32 @@
 //-----------------------------------------------------------------------------
-// main.cpp  (Milestone 5 — Save / Load Foundation)
+// main.cpp  (Milestone 6 — Foundation of Feel)
 //
-// New over Milestone 4:
-//   - SaveManager   : save to / load from sdmc:/loa_save.bin
-//   - On startup: load save if exists, else new game
-//   - SELECT = save game
-//   - START  = load game  (changed from quit to load; HOME still quits)
-//   - Status message "Game Saved" / "Game Loaded" displayed for 3 seconds
-//   - statusMessage / statusTimer drive the notification
+// New over Milestone 5:
+//   - Boots into a TITLE_SCREEN state instead of straight into gameplay.
+//     New Game / Continue (disabled with no save) / Credits.
+//   - GameState/StateManager (source/core/GameState.h) now actually used —
+//     previously declared but never wired into main().
+//   - Gameplay setup (zone load, player construction, save/load) is now
+//     deferred until the player actually chooses New Game or Continue on
+//     the title screen, rather than running unconditionally before the
+//     loop even starts.
+//   - Player/NPC sprites now animate (facing + walk frame) via AnimState
+//     — see source/entities/AnimState.h. Still fallback colored-rect art;
+//     animation shows as a small facing notch + step bob until a real
+//     sprite sheet exists.
 //
-// Button map:
+// Button map (gameplay):
 //   D-Pad / Circle Pad : move
 //   A                  : interact (NPC, world object)
 //   B                  : close dialogue
 //   SELECT             : save
 //   START              : load
 //   HOME               : quit (handled by aptMainLoop)
+//
+// Button map (title screen):
+//   D-Pad / Circle Pad Up/Down : navigate
+//   A / START                  : confirm
+//   B / A (on credits panel)   : return to menu
 //-----------------------------------------------------------------------------
 
 #include <3ds.h>
@@ -24,10 +35,13 @@
 #include "core/Logger.h"
 #include "core/Clock.h"
 #include "core/WorldClock.h"
+#include "core/GameState.h"
+#include "core/TitleScreen.h"
 #include "input/InputManager.h"
 #include "world/ZoneManager.h"
 #include "world/DayNight.h"
 #include "world/WorldObjectManager.h"
+#include "world/GatherNodeManager.h"
 #include "render/Camera.h"
 #include "render/Renderer.h"
 #include "entities/Player.h"
@@ -40,7 +54,7 @@ int main() {
     romfsInit();
 
     Logger::init();
-    LOG("Legends of Aetheria — Milestone 5: Save / Load Foundation");
+    LOG("Legends of Aetheria — Milestone 6: Foundation of Feel");
 
     Renderer renderer;
     if (!renderer.init()) {
@@ -55,7 +69,12 @@ int main() {
     InputManager input;
 
     //--------------------------------------------------------------------------
-    // Systems — constructed in dependency order
+    // Systems — constructed in dependency order.
+    // Player has no default constructor (position is required), so it's
+    // constructed here with a placeholder that startGame() below always
+    // overwrites before gameplay actually begins — same pattern as
+    // ZoneManager/NPCManager/WorldObjectManager, which are default-
+    // constructed and only meaningfully set up via their own init() calls.
     //--------------------------------------------------------------------------
     PlayerState        playerState;
     QuestManager       questMgr;
@@ -63,52 +82,12 @@ int main() {
     ZoneManager        zones;
     NPCManager         npcs;
     WorldObjectManager worldObjects;
+    GatherNodeManager  gatherNodes;
+    Player             player(0.0f, 0.0f);
+    Camera              camera;
 
-    //--------------------------------------------------------------------------
-    // Startup: load save OR new game
-    //--------------------------------------------------------------------------
-    bool loadedSave = false;
-
-    // Pre-initialize zones so the TileMap exists before loadGame writes to it.
-    zones.loadZone(ZoneID::TOWN, 0);
-    worldObjects.init(zones.getTileMap());
-    questMgr.init();
-
-
-
-    // Determine start position
-    const ZoneDef&    startDef = getZoneDef(ZoneID::TOWN);
-    const SpawnPoint& startSp  = startDef.spawns[0];
-    Player player(startSp.spawn_px, startSp.spawn_py);
-
-    // Deferred load: now that Player exists, attempt the real load
-    if (SaveManager::hasSave()) {
-        loadedSave = SaveManager::loadGame(
-            player, zones, worldClock, playerState,
-            questMgr, worldObjects, zones.getTileMap());
-        if (loadedSave) {
-            // SaveManager::apply() already applied world object overrides
-            // for the loaded zone (load zone -> restore states -> onZoneLoaded).
-            npcs.init(worldClock.getTotalMinutes());
-            LOG("Save loaded successfully");
-        } else {
-            WARN("Save validation failed — starting new game");
-        }
-    }
-
-    if (!loadedSave) {
-        // Fresh new game
-        playerState.init();
-        npcs.init(worldClock.getTotalMinutes());
-        LOG("New game started");
-    }
-
-    Camera camera;
-    camera.update(player.getCenterX(), player.getCenterY(),
-                  zones.getTileMap().getWidthPixels(),
-                  zones.getTileMap().getHeightPixels());
-
-    dayNight.update(worldClock.getTimeAsFloat());
+    StateManager state;       // starts at GameState::BOOT
+    TitleScreen  titleScreen;
 
     float timeAccum   = 0.0f;
 
@@ -116,6 +95,59 @@ int main() {
     const char* statusMessage = nullptr;
     float       statusTimer   = 0.0f;
     static constexpr float STATUS_DURATION = 3.0f;
+
+    //--------------------------------------------------------------------------
+    // startGame — runs once, when the player picks New Game or Continue on
+    // the title screen. Everything in here used to run unconditionally
+    // before the main loop in Milestone 5; it's now deferred so the title
+    // screen can be shown first without touching any gameplay system.
+    //--------------------------------------------------------------------------
+    auto startGame = [&](bool loadExisting) {
+        bool loadedSave = false;
+
+        // Pre-initialize zones so the TileMap exists before loadGame writes to it.
+        zones.loadZone(ZoneID::TOWN, 0);
+        worldObjects.init(zones.getTileMap());
+        gatherNodes.init();
+        questMgr.init();
+
+        // Determine start position
+        const ZoneDef&    startDef = getZoneDef(ZoneID::TOWN);
+        const SpawnPoint& startSp  = startDef.spawns[0];
+        player.setPosition(startSp.spawn_px, startSp.spawn_py);
+
+        if (loadExisting && SaveManager::hasSave()) {
+            loadedSave = SaveManager::loadGame(
+                player, zones, worldClock, playerState,
+                questMgr, worldObjects, zones.getTileMap());
+            if (loadedSave) {
+                // SaveManager::apply() already applied world object overrides
+                // for the loaded zone (load zone -> restore states -> onZoneLoaded).
+                npcs.init(worldClock.getTotalMinutes());
+                LOG("Save loaded successfully");
+            } else {
+                WARN("Save validation failed — starting new game");
+            }
+        }
+
+        if (!loadedSave) {
+            // Fresh new game
+            playerState.init();
+            npcs.init(worldClock.getTotalMinutes());
+            LOG("New game started");
+        }
+
+        camera.update(player.getCenterX(), player.getCenterY(),
+                      zones.getTileMap().getWidthPixels(),
+                      zones.getTileMap().getHeightPixels());
+
+        dayNight.update(worldClock.getTimeAsFloat());
+
+        state.push(GameState::GAMEPLAY);
+    };
+
+    titleScreen.enter(SaveManager::hasSave());
+    state.push(GameState::TITLE_SCREEN);
 
     LOG("Entering main loop");
 
@@ -125,6 +157,34 @@ int main() {
         //----------------------------------------------------------------------
         input.update();
 
+        clock.tick();
+        float dt = clock.getDelta();
+        timeAccum += dt;
+
+        //----------------------------------------------------------------------
+        // Title screen
+        //----------------------------------------------------------------------
+        if (state.is(GameState::TITLE_SCREEN)) {
+            TitleResult result = titleScreen.update(input);
+            if (result == TitleResult::START_NEW) {
+                startGame(/*loadExisting=*/false);
+            } else if (result == TitleResult::START_LOAD) {
+                startGame(/*loadExisting=*/true);
+            }
+
+            renderer.beginFrame(C2D_Color32(18, 22, 34, 255));
+            renderer.drawTitleScreen(titleScreen.getSelected(),
+                                     titleScreen.hasSave(),
+                                     titleScreen.isShowingCredits(),
+                                     timeAccum);
+            renderer.drawTitleScreenBottom();
+            renderer.endFrame();
+            continue;
+        }
+
+        //----------------------------------------------------------------------
+        // Gameplay
+        //----------------------------------------------------------------------
         bool aPressed      = input.isPressed(KEY_A);
         bool bPressed      = input.isPressed(KEY_B);
         bool selectPressed = input.isPressed(KEY_SELECT);
@@ -170,14 +230,13 @@ int main() {
         //----------------------------------------------------------------------
         // Update
         //----------------------------------------------------------------------
-        clock.tick();
-        float dt = clock.getDelta();
-        timeAccum   += dt;
         statusTimer  = statusTimer > 0.0f ? statusTimer - dt : 0.0f;
 
         worldClock.update(dt);
         dayNight.update(worldClock.getTimeAsFloat());
         worldObjects.updateMessageTimer(dt);
+        gatherNodes.update(dt);
+        gatherNodes.updateMessageTimer(dt);
 
         ZoneID currentZone = zones.getCurrentZoneDef().id;
 
@@ -191,7 +250,7 @@ int main() {
             player.update(axis, dt, zones.getTileMap());
         }
 
-        // A-button priority: dialogue close → world object → NPC
+        // A-button priority: dialogue close → world object → gather node → NPC
         bool aConsumed = false;
 
         if (npcs.isDialogueOpen() && aPressed) {
@@ -205,6 +264,13 @@ int main() {
                 player.getCenterX(), player.getCenterY(),
                 aPressed, zones.getTileMap(), playerState, &questMgr);
             if (result != InteractResult::NONE) aConsumed = true;
+        }
+
+        if (!aConsumed) {
+            GatherResult gatherResult = gatherNodes.tryHarvest(
+                player.getCenterX(), player.getCenterY(),
+                currentZone, aPressed, playerState);
+            if (gatherResult != GatherResult::NONE) aConsumed = true;
         }
 
         if (!aConsumed) {
@@ -247,6 +313,10 @@ int main() {
                                   worldObjects.getObjectCount(),
                                   currentZone, camera);
 
+        renderer.drawGatherNodes(gatherNodes.getNodes(),
+                                 gatherNodes.getNodeCount(),
+                                 currentZone, camera);
+
         renderer.drawNPCs(npcs, currentZone, camera);
 
         if (questMgr.markerVisible(currentZone)) {
@@ -254,7 +324,8 @@ int main() {
                                      camera, timeAccum);
         }
 
-        renderer.drawPlayer(player.getX(), player.getY(), camera);
+        renderer.drawPlayer(player.getX(), player.getY(), camera,
+                            player.getFacing(), player.getAnimFrame());
 
         renderer.drawClockDebug(clock.getFPS(),
                                 worldClock.getHour(),
@@ -279,9 +350,12 @@ int main() {
         if (npcs.isDialogueOpen()) {
             renderer.drawDialogue(npcs.getActiveDialogueNPC());
         } else {
-            const char* displayText = worldObjects.hasMessage()
-                                      ? worldObjects.getLastMessage()
-                                      : questMgr.getActiveObjectiveText();
+            const char* displayText = questMgr.getActiveObjectiveText();
+            if (worldObjects.hasMessage()) {
+                displayText = worldObjects.getLastMessage();
+            } else if (gatherNodes.hasMessage()) {
+                displayText = gatherNodes.getLastMessage();
+            }
             renderer.drawQuestHUD(displayText, playerState.gold,
                                   playerState.wood, playerState.rope);
         }

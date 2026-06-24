@@ -130,22 +130,36 @@ bool NPCManager::moveNPC(NPC& npc, const TileMap& map, float dt) {
     float dx   = npc.target_x - npc.pos_x;
     float dy   = npc.target_y - npc.pos_y;
     float dist = sqrtf(dx * dx + dy * dy);
-    if (dist <= ARRIVAL_THRESHOLD) return false;
+    if (dist <= ARRIVAL_THRESHOLD) {
+        npc.anim.update(0.0f, 0.0f, dt);
+        return false;
+    }
 
     float step = NPC_SPEED * dt;
+    float velX = 0.0f;
+    float velY = 0.0f;
+
     if (fabsf(dx) > ARRIVAL_THRESHOLD) {
         float moveX = (dx > 0.0f ? 1.0f : -1.0f) * std::min(step, fabsf(dx));
         float newX  = npc.pos_x + moveX;
         int tx = static_cast<int>(newX + 8) / TILE_SIZE;
         int ty = static_cast<int>(npc.pos_y + 8) / TILE_SIZE;
-        if (!map.isSolid(tx, ty)) npc.pos_x = newX;
+        if (!map.isSolid(tx, ty)) {
+            npc.pos_x = newX;
+            velX = (dx > 0.0f ? 1.0f : -1.0f) * NPC_SPEED;
+        }
     } else if (fabsf(dy) > ARRIVAL_THRESHOLD) {
         float moveY = (dy > 0.0f ? 1.0f : -1.0f) * std::min(step, fabsf(dy));
         float newY  = npc.pos_y + moveY;
         int tx = static_cast<int>(npc.pos_x + 8) / TILE_SIZE;
         int ty = static_cast<int>(newY + 8) / TILE_SIZE;
-        if (!map.isSolid(tx, ty)) npc.pos_y = newY;
+        if (!map.isSolid(tx, ty)) {
+            npc.pos_y = newY;
+            velY = (dy > 0.0f ? 1.0f : -1.0f) * NPC_SPEED;
+        }
     }
+
+    npc.anim.update(velX, velY, dt);
     return true;
 }
 

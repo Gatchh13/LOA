@@ -1,7 +1,7 @@
 #pragma once
 
 //-----------------------------------------------------------------------------
-// NPC.h
+// NPC.h  (Milestone 6 — adds sprite animation state)
 // Plain data structs for NPCs. No inheritance. No vtables.
 //
 // Design:
@@ -31,6 +31,7 @@
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
+#include "../entities/AnimState.h"
 
 static constexpr int MAX_SCHEDULE_ENTRIES = 8;
 static constexpr int MAX_NPC_NAME_LEN     = 20;
@@ -55,7 +56,7 @@ struct ScheduleEntry {
 
 //-----------------------------------------------------------------------------
 // NPC
-// All state for one NPC. Fits in ~200 bytes.
+// All state for one NPC. Fits in ~210 bytes.
 //-----------------------------------------------------------------------------
 struct NPC {
     // Identity
@@ -74,6 +75,11 @@ struct NPC {
     int           active_entry;       // index of current schedule entry
     float         target_x;          // pixel target derived from schedule
     float         target_y;
+
+    // Animation state — driven by moveNPC()'s per-axis movement each frame.
+    // Not saved (see AnimState.h): always derives correctly from a fresh
+    // idle pose after load/zone-entry.
+    AnimState anim;
 
     // State flags
     bool        dialogue_active;            // true while player is reading dialogue

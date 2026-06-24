@@ -1,7 +1,7 @@
 #pragma once
 
 //-----------------------------------------------------------------------------
-// PlayerState.h  (Milestone 4 — adds resources)
+// PlayerState.h  (Milestone 6 — gathering nodes replace placeholder resources)
 //
 // Additions:
 //   wood  — used to repair bridges and clear fallen trees
@@ -12,12 +12,12 @@
 // so "what does a fresh save start with" is one obvious call site instead of
 // hidden default-construction logic.
 //
-// PLACEHOLDER STARTING RESOURCES:
-//   There is no gathering system yet (planned for Milestone 6). Until it
-//   exists, init() grants a fixed amount of wood/rope so the three world
-//   objects (bridge: 5 wood, ladder: 3 rope, fallen tree: 8 wood — see
-//   WorldObjectManager.cpp) are all reachable for testing. Remove
-//   PLACEHOLDER_STARTING_WOOD / _ROPE the moment gathering nodes exist.
+// Starting resources are 0 as of Milestone 6 — GatherNodeManager (see
+// source/world/GatherNodeManager.h) now provides wood/rope via harvestable
+// nodes in Forest, so a fresh game requires gathering before repairing the
+// bridge (5 wood), ladder (3 rope), or fallen tree (8 wood). Previously
+// (Milestone 4–5) this struct granted a fixed starting amount as a
+// placeholder since no gathering system existed yet.
 //
 // Save-friendly: struct embeds into SaveData verbatim. All fields are
 // plain integer types. No pointers. No dynamic allocation.
@@ -26,10 +26,6 @@
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
-
-// TODO(Milestone 6): delete once resource gathering exists.
-static constexpr u8 PLACEHOLDER_STARTING_WOOD = 20;
-static constexpr u8 PLACEHOLDER_STARTING_ROPE = 10;
 
 struct PlayerState {
     u32 gold;
@@ -42,13 +38,24 @@ struct PlayerState {
     // from save data, so init() is never called on a loaded game).
     void init() {
         gold   = 0;
-        wood   = PLACEHOLDER_STARTING_WOOD;
-        rope   = PLACEHOLDER_STARTING_ROPE;
+        wood   = 0;
+        rope   = 0;
         pad[0] = 0;
         pad[1] = 0;
     }
 
     void addGold(u32 amount)  { gold += amount; }
-    void addWood(u8  amount)  { wood = static_cast<u8>(wood + amount); }
-    void addRope(u8  amount)  { rope = static_cast<u8>(rope + amount); }
+
+    // Clamped, not wrapped: wood/rope are now earned repeatedly via
+    // gathering nodes (Milestone 6 — see GatherNodeManager), not just
+    // granted once at game start, so silent u8 wraparound past 255 is a
+    // real risk here, not a theoretical one.
+    void addWood(u8 amount) {
+        int sum = static_cast<int>(wood) + static_cast<int>(amount);
+        wood = static_cast<u8>(sum > 255 ? 255 : sum);
+    }
+    void addRope(u8 amount) {
+        int sum = static_cast<int>(rope) + static_cast<int>(amount);
+        rope = static_cast<u8>(sum > 255 ? 255 : sum);
+    }
 };

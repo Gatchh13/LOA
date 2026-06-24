@@ -26,7 +26,11 @@ public:
         if (top + 1 < STACK_DEPTH) {
             stack[++top] = s;
         }
-        // silently ignore overflow in v1 — Logger will flag this in debug builds later
+        // Overflow (more than STACK_DEPTH nested states) is silently
+        // ignored — the push is dropped and current() keeps returning
+        // whatever was already on top. STACK_DEPTH=4 comfortably covers
+        // the current usage (TITLE_SCREEN / GAMEPLAY, no nested menus
+        // yet); revisit if a future milestone adds deep menu nesting.
     }
 
     void pop() {

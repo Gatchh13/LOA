@@ -1,11 +1,12 @@
 #pragma once
 
 //-----------------------------------------------------------------------------
-// Player.h  (Milestone 1 — adds setPosition)
+// Player.h  (Milestone 6 — adds sprite animation state)
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
 #include "../world/TileMap.h"
+#include "AnimState.h"
 
 class Player {
 public:
@@ -26,11 +27,18 @@ public:
     int getCenterTileX() const { return static_cast<int>(getCenterX()) / TILE_SIZE; }
     int getCenterTileY() const { return static_cast<int>(getCenterY()) / TILE_SIZE; }
 
+    // Animation state, updated every update() call from movement input.
+    // Renderer reads these to pick facing/frame for drawing.
+    Facing getFacing() const { return m_anim.facing; }
+    u8     getAnimFrame() const { return m_anim.frame; }
+    bool   isMoving() const { return m_anim.isMoving; }
+
     static constexpr int   PLAYER_W = 14;
     static constexpr int   PLAYER_H = 14;
     static constexpr float SPEED    = 80.0f;
 
 private:
-    Vec2 m_pos;
+    Vec2      m_pos;
+    AnimState m_anim;
 };
 

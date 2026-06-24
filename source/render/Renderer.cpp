@@ -104,6 +104,45 @@ void Renderer::drawColorRect(float sx, float sy, float w, float h, u32 color) co
 }
 
 //-----------------------------------------------------------------------------
+// drawDirectionalIndicator  (Milestone 6 — animation foundation)
+//
+// Fallback-mode visual for facing + walk animation, used until a real
+// sprite sheet exists. Draws a small notch on the edge of the entity's
+// bounding box in the direction it's facing, and applies a tiny offset
+// keyed off animFrame so movement is visibly distinct from standing still
+// even with placeholder colored-rect art.
+//
+// animFrame is 0 (idle) or 1..FRAMES_PER_ANIM-1 (walking). The offset
+// alternates by frame parity — cheap and reads as "stepping" at normal
+// walk speed.
+//-----------------------------------------------------------------------------
+void Renderer::drawDirectionalIndicator(float sx, float sy, float w, float h,
+                                        Facing facing, u8 animFrame, u32 color) const {
+    constexpr float NOTCH = 3.0f;
+    float cx = sx + w * 0.5f;
+    float cy = sy + h * 0.5f;
+
+    // Walking bob: shift the notch slightly on odd frames.
+    // Idle (frame 0) always uses the resting offset.
+    float bob = (animFrame != 0 && (animFrame % 2) == 1) ? 1.0f : 0.0f;
+
+    switch (facing) {
+        case Facing::DOWN:
+            drawColorRect(cx - NOTCH * 0.5f, sy + h - NOTCH - bob, NOTCH, NOTCH, color);
+            break;
+        case Facing::UP:
+            drawColorRect(cx - NOTCH * 0.5f, sy + bob, NOTCH, NOTCH, color);
+            break;
+        case Facing::LEFT:
+            drawColorRect(sx + bob, cy - NOTCH * 0.5f, NOTCH, NOTCH, color);
+            break;
+        case Facing::RIGHT:
+            drawColorRect(sx + w - NOTCH - bob, cy - NOTCH * 0.5f, NOTCH, NOTCH, color);
+            break;
+    }
+}
+
+//-----------------------------------------------------------------------------
 void Renderer::drawTileMap(const TileMap& map, const Camera& cam) {
     int tx0 = cam.getX() / TILE_SIZE;
     int ty0 = cam.getY() / TILE_SIZE;
@@ -137,12 +176,15 @@ void Renderer::drawTileMap(const TileMap& map, const Camera& cam) {
 }
 
 //-----------------------------------------------------------------------------
-// NPC sprite: 14×14 blue square with a white center dot.
+// NPC sprite: 14×14 blue square with a white center dot, plus a small
+// dark notch showing facing direction (Milestone 6).
 // Distinct from the player (red) so they're easy to tell apart.
 //-----------------------------------------------------------------------------
-void Renderer::drawNPCSprite(float sx, float sy) const {
+void Renderer::drawNPCSprite(float sx, float sy, Facing facing, u8 animFrame) const {
     drawColorRect(sx,     sy,     14, 14, C2D_Color32( 60, 100, 200, 255));
     drawColorRect(sx + 5, sy + 5,  4,  4, C2D_Color32(220, 230, 255, 255));
+    drawDirectionalIndicator(sx, sy, 14, 14, facing, animFrame,
+                             C2D_Color32(20, 30, 70, 255));
 }
 
 void Renderer::drawNPCs(const NPCManager& mgr, ZoneID currentZone, const Camera& cam) {
@@ -161,7 +203,7 @@ void Renderer::drawNPCs(const NPCManager& mgr, ZoneID currentZone, const Camera&
         if (sx < -TILE_SIZE || sx > SCREEN_TOP_W + TILE_SIZE) continue;
         if (sy < -TILE_SIZE || sy > SCREEN_TOP_H + TILE_SIZE) continue;
 
-        drawNPCSprite(sx, sy);
+        drawNPCSprite(sx, sy, npc.anim.facing, npc.anim.frame);
 
         // Draw NPC name above sprite when in dialogue range (optional debug aid)
         // We skip this to keep the text buffer usage low and avoid clutter.
@@ -169,14 +211,20 @@ void Renderer::drawNPCs(const NPCManager& mgr, ZoneID currentZone, const Camera&
 }
 
 //-----------------------------------------------------------------------------
-void Renderer::drawPlayer(float worldX, float worldY, const Camera& cam) {
+void Renderer::drawPlayer(float worldX, float worldY, const Camera& cam,
+                          Facing facing, u8 animFrame) {
     float sx = static_cast<float>(cam.worldToScreenX(worldX));
     float sy = static_cast<float>(cam.worldToScreenY(worldY));
 
     if (m_useFallbackColors) {
         drawColorRect(sx,     sy,     16, 16, C2D_Color32(200,  80,  80, 255));
         drawColorRect(sx + 6, sy + 6,  4,  4, C2D_Color32(255, 255, 255, 255));
+        drawDirectionalIndicator(sx, sy, 16, 16, facing, animFrame,
+                                 C2D_Color32(90, 20, 20, 255));
     } else {
+        // TODO(sprite sheet): once tiles.t3x includes a walk-cycle strip,
+        // select the image by (facing, animFrame) instead of always
+        // drawing m_imgPlayer. See AnimState.h for the indexing scheme.
         C2D_DrawImageAt(m_imgPlayer, sx, sy, 0.5f);
     }
 }
@@ -220,6 +268,127 @@ void Renderer::drawFade(float alpha) {
                   static_cast<float>(SCREEN_TOP_W),
                   static_cast<float>(SCREEN_TOP_H),
                   C2D_Color32(0, 0, 0, a));
+}
+
+//-----------------------------------------------------------------------------
+// drawTitleScreen  (Milestone 6 — Foundation of Feel)
+//
+// Pure top-screen draw — no tile map, no camera, nothing gameplay-related
+// is touched here. Three rows (New Game / Continue / Credits) are drawn
+// as plain text with a triangular cursor next to whichever is selected.
+// Continue is drawn at reduced alpha when hasSave is false, matching how
+// drawFade/drawFooter etc. already encode "dimmed" as a literal alpha
+// value rather than a separate disabled-color palette.
+//-----------------------------------------------------------------------------
+void Renderer::drawTitleScreen(TitleOption selected, bool hasSave,
+                               bool showingCredits, float timeAccum) {
+    // No background rect needed here — beginFrame() already cleared the
+    // top screen to this color via C2D_TargetClear before this is called.
+
+    if (showingCredits) {
+        C2D_Text title;
+        C2D_TextParse(&title, m_textBuf, "Credits");
+        C2D_TextOptimize(&title);
+        float tw = 0.0f, th = 0.0f;
+        C2D_TextGetDimensions(&title, 0.9f, 0.9f, &tw, &th);
+        float tx = (static_cast<float>(SCREEN_TOP_W) - tw) * 0.5f;
+        C2D_DrawText(&title, C2D_WithColor | C2D_AtBaseline,
+                     tx, 40.0f, 0.7f, 0.9f, 0.9f,
+                     C2D_Color32(255, 230, 150, 255));
+
+        static const char* lines[] = {
+            "Legends of Aetheria",
+            "A solo homebrew project",
+            "",
+            "Press A or B to return",
+        };
+        float y = 90.0f;
+        for (const char* line : lines) {
+            C2D_Text t;
+            C2D_TextParse(&t, m_textBuf, line);
+            C2D_TextOptimize(&t);
+            float lw = 0.0f, lh = 0.0f;
+            C2D_TextGetDimensions(&t, 0.55f, 0.55f, &lw, &lh);
+            float lx = (static_cast<float>(SCREEN_TOP_W) - lw) * 0.5f;
+            C2D_DrawText(&t, C2D_WithColor | C2D_AtBaseline,
+                         lx, y, 0.6f, 0.55f, 0.55f,
+                         C2D_Color32(220, 220, 220, 255));
+            y += 22.0f;
+        }
+        return;
+    }
+
+    // Title
+    C2D_Text title;
+    C2D_TextParse(&title, m_textBuf, "Legends of Aetheria");
+    C2D_TextOptimize(&title);
+    float tw = 0.0f, th = 0.0f;
+    C2D_TextGetDimensions(&title, 1.1f, 1.1f, &tw, &th);
+    float titleX = (static_cast<float>(SCREEN_TOP_W) - tw) * 0.5f;
+    C2D_DrawText(&title, C2D_WithColor | C2D_AtBaseline,
+                 titleX + 1.0f, 71.0f, 0.5f, 1.1f, 1.1f,
+                 C2D_Color32(0, 0, 0, 180));
+    C2D_DrawText(&title, C2D_WithColor | C2D_AtBaseline,
+                 titleX, 70.0f, 0.6f, 1.1f, 1.1f,
+                 C2D_Color32(255, 230, 150, 255));
+
+    // Menu rows
+    static constexpr const char* LABELS[3] = { "New Game", "Continue", "Credits" };
+    constexpr float ROW_HEIGHT = 26.0f;
+    constexpr float FIRST_ROW_Y = 130.0f;
+
+    // Gentle pulse on the cursor so the selected row reads as "alive"
+    // even with no sprite work done yet — sin wave, ~1.5s period.
+    float pulse = 0.5f + 0.5f * sinf(timeAccum * 4.0f);
+
+    for (int i = 0; i < 3; i++) {
+        TitleOption opt = static_cast<TitleOption>(i);
+        bool isSelected = (opt == selected);
+        bool isDisabled = (opt == TitleOption::CONTINUE) && !hasSave;
+
+        u8 alpha = isDisabled ? 100 : 255;
+        u32 color = isSelected
+            ? C2D_Color32(255, 240, 180, alpha)
+            : C2D_Color32(200, 200, 200, alpha);
+
+        float rowY = FIRST_ROW_Y + i * ROW_HEIGHT;
+
+        C2D_Text label;
+        C2D_TextParse(&label, m_textBuf, LABELS[i]);
+        C2D_TextOptimize(&label);
+        float lw = 0.0f, lh = 0.0f;
+        C2D_TextGetDimensions(&label, 0.7f, 0.7f, &lw, &lh);
+        float lx = (static_cast<float>(SCREEN_TOP_W) - lw) * 0.5f;
+
+        C2D_DrawText(&label, C2D_WithColor | C2D_AtBaseline,
+                     lx, rowY, 0.6f, 0.7f, 0.7f, color);
+
+        if (isSelected && !isDisabled) {
+            // Small triangular cursor to the left of the selected label,
+            // nudged outward slightly by `pulse` for a subtle breathing effect.
+            float cursorX = lx - 14.0f - pulse * 2.0f;
+            float cy = rowY - lh * 0.35f;
+            C2D_DrawTriangle(
+                cursorX,      cy - 5.0f, color,
+                cursorX,      cy + 5.0f, color,
+                cursorX + 9.0f, cy,        color,
+                0.6f);
+        }
+    }
+
+    // Footer hint
+    C2D_Text hint;
+    const char* hintText = hasSave
+        ? "Up/Down: Select   A/Start: Confirm"
+        : "Up/Down: Select   A/Start: Confirm   (No save found)";
+    C2D_TextParse(&hint, m_textBuf, hintText);
+    C2D_TextOptimize(&hint);
+    float hw = 0.0f, hh = 0.0f;
+    C2D_TextGetDimensions(&hint, 0.45f, 0.45f, &hw, &hh);
+    float hx = (static_cast<float>(SCREEN_TOP_W) - hw) * 0.5f;
+    C2D_DrawText(&hint, C2D_WithColor | C2D_AtBaseline,
+                 hx, static_cast<float>(SCREEN_TOP_H) - 14.0f, 0.6f, 0.45f, 0.45f,
+                 C2D_Color32(160, 160, 160, 255));
 }
 
 //-----------------------------------------------------------------------------
@@ -317,7 +486,6 @@ void Renderer::drawDialogue(const NPC* npc) {
                      10.0f, 72.0f, 0.7f, 0.55f, 0.55f,
                      C2D_Color32(200, 200, 200, 255));
     }
-    (void)t2;
 
     // Close hint
     C2D_Text hintText;
@@ -329,6 +497,43 @@ void Renderer::drawDialogue(const NPC* npc) {
 
     m_dialogueDrawnThisFrame = true;
     C2D_SceneBegin(m_topTarget);
+}
+
+//-----------------------------------------------------------------------------
+// drawGatherNodes  (Milestone 6 — Foundation of Feel)
+//
+// Placeholder visuals, same philosophy as drawWorldObjects: no sprites
+// required. Wood nodes are a small stump (dark ring + lighter center).
+// Rope nodes are a coiled tan loop. Both drawn at reduced alpha while on
+// cooldown so harvested-vs-ready is readable without needing to walk up
+// and try interacting.
+//-----------------------------------------------------------------------------
+void Renderer::drawGatherNodes(const GatherNode* nodes, int count,
+                               ZoneID currentZone, const Camera& cam) {
+    for (int i = 0; i < count; i++) {
+        const GatherNode& node = nodes[i];
+        if (!node.active)             continue;
+        if (node.zone != currentZone) continue;
+
+        float sx = node.pos_x - static_cast<float>(cam.getX()) - 6.0f;
+        float sy = node.pos_y - static_cast<float>(cam.getY()) - 6.0f;
+
+        if (sx < -16.0f || sx > SCREEN_TOP_W + 16.0f) continue;
+        if (sy < -16.0f || sy > SCREEN_TOP_H + 16.0f) continue;
+
+        bool onCooldown = node.cooldown > 0.0f;
+        u8   alpha      = onCooldown ? 90 : 255;
+
+        if (node.resource == GatherResource::WOOD) {
+            // Stump: dark ring + lighter center
+            drawColorRect(sx,     sy,     12, 12, C2D_Color32(90, 60, 30, alpha));
+            drawColorRect(sx + 3, sy + 3,  6,  6, C2D_Color32(150, 110, 60, alpha));
+        } else {
+            // Rope coil: two offset tan rects suggesting a loop
+            drawColorRect(sx,     sy + 3, 12,  6, C2D_Color32(200, 170, 110, alpha));
+            drawColorRect(sx + 3, sy,      6, 12, C2D_Color32(170, 140, 90, alpha));
+        }
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -430,6 +635,26 @@ void Renderer::drawWorldObjects(const WorldObject* objects, int count,
 
 //-----------------------------------------------------------------------------
 // drawQuestHUD  (Milestone 4 — adds wood/rope resource display)
+//-----------------------------------------------------------------------------
+void Renderer::drawTitleScreenBottom() {
+    C2D_SceneBegin(m_botTarget);
+    C2D_TargetClear(m_botTarget, C2D_Color32(18, 22, 34, 255));
+
+    C2D_Text text;
+    C2D_TextParse(&text, m_textBuf, "A Wayfinder's tale of road and lantern.");
+    C2D_TextOptimize(&text);
+    float tw = 0.0f, th = 0.0f;
+    C2D_TextGetDimensions(&text, 0.55f, 0.55f, &tw, &th);
+    float tx = (static_cast<float>(SCREEN_BOT_W) - tw) * 0.5f;
+    float ty = (static_cast<float>(SCREEN_BOT_H) + th) * 0.5f;
+    C2D_DrawText(&text, C2D_WithColor | C2D_AtBaseline,
+                 tx, ty, 0.6f, 0.55f, 0.55f,
+                 C2D_Color32(150, 150, 170, 255));
+
+    m_dialogueDrawnThisFrame = true; // tells endFrame() not to re-clear this
+    C2D_SceneBegin(m_topTarget);
+}
+
 //-----------------------------------------------------------------------------
 void Renderer::drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rope) {
     C2D_SceneBegin(m_botTarget);
@@ -551,6 +776,7 @@ void Renderer::drawStatusMessage(const char* text, float alpha) {
 }
 
 //-----------------------------------------------------------------------------
+void Renderer::endFrame() {
     if (!m_dialogueDrawnThisFrame) {
         C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
         C2D_SceneBegin(m_botTarget);

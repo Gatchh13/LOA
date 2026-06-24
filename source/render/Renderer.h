@@ -24,8 +24,11 @@
 #include "../../include/types.h"
 #include "../world/TileMap.h"
 #include "../world/WorldObject.h"
+#include "../world/GatherNode.h"
 #include "../npc/NPC.h"
 #include "../npc/NPCManager.h"
+#include "../entities/AnimState.h"
+#include "../core/TitleScreen.h"
 #include "Camera.h"
 
 #include <citro2d.h>
@@ -46,8 +49,11 @@ public:
     // Draw all active NPCs in the current zone.
     void drawNPCs(const NPCManager& npcs, ZoneID currentZone, const Camera& cam);
 
-    // Draw the player sprite.
-    void drawPlayer(float worldX, float worldY, const Camera& cam);
+    // Draw the player sprite. facing/frame come from Player::getFacing()/
+    // getAnimFrame() — used to pick the correct sprite once a sprite sheet
+    // exists, and to draw a small directional indicator in fallback mode.
+    void drawPlayer(float worldX, float worldY, const Camera& cam,
+                    Facing facing, u8 animFrame);
 
     // Draw FPS counter and world clock (HH:MM + phase) in debug area.
     void drawClockDebug(float fps, int hour, int minute, const char* phase);
@@ -71,6 +77,13 @@ public:
     void drawWorldObjects(const WorldObject* objects, int count,
                           ZoneID currentZone, const Camera& cam);
 
+    // Draw gather nodes (resource pickups) in the current zone. Nodes on
+    // cooldown are drawn dimmed so the player can tell at a glance which
+    // are harvestable. nodes/count from GatherNodeManager::getNodes() /
+    // getNodeCount().
+    void drawGatherNodes(const GatherNode* nodes, int count,
+                        ZoneID currentZone, const Camera& cam);
+
     // Draw quest objective text, gold, and resources on bottom screen.
     // objectiveText: nullptr = show "No active quest".
     void drawQuestHUD(const char* objectiveText, u32 gold, u8 wood, u8 rope);
@@ -84,6 +97,19 @@ public:
     // timeAccum: running total real seconds (for pulse animation).
     void drawQuestMarker(float worldX, float worldY,
                          const Camera& cam, float timeAccum);
+
+    // Draw the title screen: game title, three menu options (New Game /
+    // Continue / Credits), and the credits panel when showingCredits is
+    // true. selected/hasSave/showingCredits come from TitleScreen's
+    // getters. timeAccum drives a subtle pulse on the selected option.
+    void drawTitleScreen(TitleOption selected, bool hasSave,
+                        bool showingCredits, float timeAccum);
+
+    // Draw the title screen's bottom-screen panel (game name + version-ish
+    // flavor line). Separate from drawQuestHUD, which would otherwise leak
+    // "QUEST / No active quest / Gold:0 Wood:0 Rope:0" onto a screen that
+    // has nothing to do with gameplay yet.
+    void drawTitleScreenBottom();
 
     void endFrame();
 
@@ -108,5 +134,7 @@ private:
 
     static u32  fallbackColorForTile(u8 tileId);
     void        drawColorRect(float sx, float sy, float w, float h, u32 color) const;
-    void        drawNPCSprite(float sx, float sy) const;
+    void        drawNPCSprite(float sx, float sy, Facing facing, u8 animFrame) const;
+    void        drawDirectionalIndicator(float sx, float sy, float w, float h,
+                                         Facing facing, u8 animFrame, u32 color) const;
 };

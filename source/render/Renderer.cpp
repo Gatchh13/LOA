@@ -500,7 +500,95 @@ void Renderer::drawDialogue(const NPC* npc) {
 }
 
 //-----------------------------------------------------------------------------
-// drawGatherNodes  (Milestone 6 — Foundation of Feel)
+// drawShop  (Milestone 7 — Economy Loop)
+//
+// Bottom-screen panel, same structural pattern as drawDialogue/
+// drawQuestHUD: dark backdrop, border line, text rows. Stock list (7
+// items max) fits on one screen with room to spare, so there's no
+// scrolling to implement.
+//-----------------------------------------------------------------------------
+void Renderer::drawShop(int cursor, u32 gold, const char* lastMessage, float messageTimer) {
+    C2D_SceneBegin(m_botTarget);
+    C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
+
+    drawColorRect(0.0f, 0.0f,
+                  static_cast<float>(SCREEN_BOT_W), static_cast<float>(SCREEN_BOT_H),
+                  C2D_Color32(10, 10, 20, 230));
+
+    // Header
+    C2D_Text header;
+    C2D_TextParse(&header, m_textBuf, "Mira's Wares");
+    C2D_TextOptimize(&header);
+    C2D_DrawText(&header, C2D_WithColor | C2D_AtBaseline,
+                 10.0f, 16.0f, 0.7f, 0.6f, 0.6f,
+                 C2D_Color32(255, 220, 80, 255));
+
+    // Gold, right-aligned-ish
+    char goldBuf[24];
+    snprintf(goldBuf, sizeof(goldBuf), "Gold: %u", gold);
+    C2D_Text goldText;
+    C2D_TextParse(&goldText, m_textBuf, goldBuf);
+    C2D_TextOptimize(&goldText);
+    C2D_DrawText(&goldText, C2D_WithColor | C2D_AtBaseline,
+                 230.0f, 16.0f, 0.7f, 0.5f, 0.5f,
+                 C2D_Color32(220, 200, 120, 255));
+
+    // Stock rows
+    constexpr float FIRST_ROW_Y = 36.0f;
+    constexpr float ROW_HEIGHT  = 20.0f;
+
+    for (int i = 0; i < MAX_SHOP_ITEMS; i++) {
+        const ItemDef& def = getItemDef(s_shopStock[i]);
+        bool isSelected = (i == cursor);
+
+        float rowY = FIRST_ROW_Y + i * ROW_HEIGHT;
+        u32 color = isSelected
+            ? C2D_Color32(255, 240, 180, 255)
+            : C2D_Color32(200, 200, 200, 255);
+
+        if (isSelected) {
+            drawColorRect(4.0f, rowY - 12.0f,
+                          static_cast<float>(SCREEN_BOT_W) - 8.0f, ROW_HEIGHT - 2.0f,
+                          C2D_Color32(60, 60, 90, 160));
+        }
+
+        char rowBuf[40];
+        snprintf(rowBuf, sizeof(rowBuf), "%s", def.name);
+        C2D_Text rowText;
+        C2D_TextParse(&rowText, m_textBuf, rowBuf);
+        C2D_TextOptimize(&rowText);
+        C2D_DrawText(&rowText, C2D_WithColor | C2D_AtBaseline,
+                     14.0f, rowY, 0.6f, 0.5f, 0.5f, color);
+
+        char priceBuf[16];
+        snprintf(priceBuf, sizeof(priceBuf), "%ug", def.base_price);
+        C2D_Text priceText;
+        C2D_TextParse(&priceText, m_textBuf, priceBuf);
+        C2D_TextOptimize(&priceText);
+        C2D_DrawText(&priceText, C2D_WithColor | C2D_AtBaseline,
+                     250.0f, rowY, 0.6f, 0.5f, 0.5f, color);
+    }
+
+    // Inline feedback message (purchase result), or the control hint.
+    if (lastMessage != nullptr && messageTimer > 0.0f) {
+        C2D_Text msgText;
+        C2D_TextParse(&msgText, m_textBuf, lastMessage);
+        C2D_TextOptimize(&msgText);
+        C2D_DrawText(&msgText, C2D_WithColor | C2D_AtBaseline,
+                     10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.5f, 0.5f,
+                     C2D_Color32(255, 200, 120, 255));
+    } else {
+        C2D_Text hint;
+        C2D_TextParse(&hint, m_textBuf, "Up/Down: Select   A: Buy   B: Leave");
+        C2D_TextOptimize(&hint);
+        C2D_DrawText(&hint, C2D_WithColor | C2D_AtBaseline,
+                     10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.42f, 0.42f,
+                     C2D_Color32(140, 140, 140, 255));
+    }
+
+    m_dialogueDrawnThisFrame = true;
+    C2D_SceneBegin(m_topTarget);
+}
 //
 // Placeholder visuals, same philosophy as drawWorldObjects: no sprites
 // required. Wood nodes are a small stump (dark ring + lighter center).

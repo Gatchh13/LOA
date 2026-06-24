@@ -167,7 +167,22 @@ void QuestManager::advanceStep(u8 quest_id, PlayerState& playerState) {
 
 void QuestManager::applyReward(const QuestDef& def, PlayerState& playerState) {
     playerState.addGold(def.reward.gold);
-    LOG("Reward applied: +%u gold (total: %u)", def.reward.gold, playerState.gold);
+
+    if (def.reward.item_qty > 0) {
+        bool added = playerState.inventory.addItem(def.reward.item_id, def.reward.item_qty);
+        if (!added) {
+            // Inventory was full — gold is still granted above, but the
+            // item is lost rather than blocking quest completion. Logged
+            // so it's visible during testing; not expected to happen in
+            // practice with only one item-rewarding quest and 8 slots.
+            WARN("Quest '%s' reward item lost — inventory full (item_id=%u, qty=%u)",
+                 def.title, def.reward.item_id, def.reward.item_qty);
+        }
+        LOG("Reward applied: +%u gold, +%u x item %u (total gold: %u)",
+            def.reward.gold, def.reward.item_qty, def.reward.item_id, playerState.gold);
+    } else {
+        LOG("Reward applied: +%u gold (total: %u)", def.reward.gold, playerState.gold);
+    }
 }
 
 bool QuestManager::hasActiveQuest() const {

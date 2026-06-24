@@ -37,8 +37,8 @@ static void initBlacksmith(NPC& n) {
 
 static void initMerchant(NPC& n) {
     n.npc_id   = 1;
-    strncpy(n.name,     "Mira",                                          MAX_NPC_NAME_LEN - 1);
-    strncpy(n.dialogue, "Finest goods this side of the mountains!",      MAX_DIALOGUE_LEN - 1);
+    strncpy(n.name,     "Mira",                                                  MAX_NPC_NAME_LEN - 1);
+    strncpy(n.dialogue, "Finest goods this side of the mountains!\n(Y: Browse)", MAX_DIALOGUE_LEN - 1);
     n.home_zone         = ZoneID::TOWN;
     n.dialogue_override = nullptr;
 
@@ -229,5 +229,14 @@ bool NPCManager::isDialogueOpen() const {
 const NPC* NPCManager::getActiveDialogueNPC() const {
     if (m_activeDialogueIndex < 0) return nullptr;
     return &m_npcs[m_activeDialogueIndex];
+}
+
+// Mira's npc_id — defined once here rather than repeating the literal 1
+// at every call site that needs to identify the shopkeeper specifically.
+static constexpr u8 MERCHANT_NPC_ID = 1;
+
+bool NPCManager::isTalkingToMerchant() const {
+    if (m_activeDialogueIndex < 0) return false;
+    return m_npcs[m_activeDialogueIndex].npc_id == MERCHANT_NPC_ID;
 }
 

@@ -1,24 +1,24 @@
 //-----------------------------------------------------------------------------
-// main.cpp  (Milestone 6 — Foundation of Feel)
+// main.cpp  (Milestone 7 — Economy Loop)
 //
-// New over Milestone 5:
-//   - Boots into a TITLE_SCREEN state instead of straight into gameplay.
-//     New Game / Continue (disabled with no save) / Credits.
-//   - GameState/StateManager (source/core/GameState.h) now actually used —
-//     previously declared but never wired into main().
-//   - Gameplay setup (zone load, player construction, save/load) is now
-//     deferred until the player actually chooses New Game or Continue on
-//     the title screen, rather than running unconditionally before the
-//     loop even starts.
-//   - Player/NPC sprites now animate (facing + walk frame) via AnimState
-//     — see source/entities/AnimState.h. Still fallback colored-rect art;
-//     animation shows as a small facing notch + step bob until a real
-//     sprite sheet exists.
+// New over Milestone 6:
+//   - Shop system: pressing Y while talking to Mira opens her stock list
+//     (ShopUI, see source/world/Shop.h). Up/Down selects, A buys
+//     (deducts gold, adds to inventory), B leaves. Reuses the existing
+//     dialogue-open/closed flow rather than adding a new GameState.
+//   - Inventory: PlayerState now owns an 8-slot Inventory (see
+//     source/quest/Inventory.h). Populated by shop purchases and quest
+//     rewards. Persisted in SaveData (version bumped 5 -> 6).
+//   - Quest rewards can now include an item alongside gold (see
+//     QuestDef.h's QuestReward) — "The Missing Package" grants Mira's
+//     Token on completion, proving the reward path for a non-purchasable
+//     item.
 //
 // Button map (gameplay):
 //   D-Pad / Circle Pad : move
-//   A                  : interact (NPC, world object)
-//   B                  : close dialogue
+//   A                  : interact (NPC, world object, gather node) / buy (in shop)
+//   B                  : close dialogue / leave shop
+//   Y                  : open shop (only while talking to Mira)
 //   SELECT             : save
 //   START              : load
 //   HOME               : quit (handled by aptMainLoop)
@@ -42,6 +42,7 @@
 #include "world/DayNight.h"
 #include "world/WorldObjectManager.h"
 #include "world/GatherNodeManager.h"
+#include "world/Shop.h"
 #include "render/Camera.h"
 #include "render/Renderer.h"
 #include "entities/Player.h"
@@ -83,6 +84,7 @@ int main() {
     NPCManager         npcs;
     WorldObjectManager worldObjects;
     GatherNodeManager  gatherNodes;
+    ShopUI             shop;
     Player             player(0.0f, 0.0f);
     Camera              camera;
 
@@ -95,6 +97,13 @@ int main() {
     const char* statusMessage = nullptr;
     float       statusTimer   = 0.0f;
     static constexpr float STATUS_DURATION = 3.0f;
+
+    // Shop feedback message state (purchase result) — same pattern as
+    // statusMessage above, scoped separately since it's shown inside the
+    // shop panel rather than as a top-screen banner.
+    const char* shopMessage      = nullptr;
+    float       shopMessageTimer = 0.0f;
+    static constexpr float SHOP_MESSAGE_DURATION = 2.0f;
 
     //--------------------------------------------------------------------------
     // startGame — runs once, when the player picks New Game or Continue on
@@ -187,6 +196,7 @@ int main() {
         //----------------------------------------------------------------------
         bool aPressed      = input.isPressed(KEY_A);
         bool bPressed      = input.isPressed(KEY_B);
+        bool yPressed      = input.isPressed(KEY_Y);
         bool selectPressed = input.isPressed(KEY_SELECT);
         bool startPressed  = input.isPressed(KEY_START);
 
@@ -230,7 +240,8 @@ int main() {
         //----------------------------------------------------------------------
         // Update
         //----------------------------------------------------------------------
-        statusTimer  = statusTimer > 0.0f ? statusTimer - dt : 0.0f;
+        statusTimer      = statusTimer > 0.0f ? statusTimer - dt : 0.0f;
+        shopMessageTimer = shopMessageTimer > 0.0f ? shopMessageTimer - dt : 0.0f;
 
         worldClock.update(dt);
         dayNight.update(worldClock.getTimeAsFloat());
@@ -240,20 +251,71 @@ int main() {
 
         ZoneID currentZone = zones.getCurrentZoneDef().id;
 
+        // Open the shop: Y while talking to Mira specifically. Checked
+        // before the B-close-dialogue handling below so the same frame
+        // that opens the shop doesn't also immediately process a B press
+        // meant for something else.
+        if (yPressed && !shop.isOpen() && npcs.isDialogueOpen() &&
+            npcs.isTalkingToMerchant())
+        {
+            npcs.closeDialogue();
+            shop.open();
+            shopMessage      = nullptr;
+            shopMessageTimer = 0.0f;
+            LOG("Shop opened");
+        }
+
+        if (shop.isOpen()) {
+            // Shop has exclusive input while open: no movement, no
+            // dialogue, no world object/gather/NPC interaction this
+            // frame. Mirrors how dialogue already suspends movement via
+            // `canMove` below, just for the shop's own input set.
+            if (input.isPressed(KEY_DOWN)) shop.moveCursor(+1);
+            if (input.isPressed(KEY_UP))   shop.moveCursor(-1);
+
+            if (aPressed) {
+                ShopResult result = shop.tryBuy(playerState);
+                switch (result) {
+                    case ShopResult::PURCHASED:
+                        shopMessage = "Purchased!";
+                        break;
+                    case ShopResult::NOT_ENOUGH_GOLD:
+                        shopMessage = "Not enough gold.";
+                        break;
+                    case ShopResult::INVENTORY_FULL:
+                        shopMessage = "Inventory full.";
+                        break;
+                    case ShopResult::NONE:
+                    default:
+                        shopMessage = nullptr;
+                        break;
+                }
+                shopMessageTimer = SHOP_MESSAGE_DURATION;
+            }
+
+            if (bPressed) {
+                shop.close();
+                LOG("Shop closed");
+            }
+        }
+
         if (bPressed && npcs.isDialogueOpen()) {
             npcs.closeDialogue();
         }
 
-        bool canMove = (zones.getFadeAlpha() < 1.0f) && !npcs.isDialogueOpen();
+        bool canMove = (zones.getFadeAlpha() < 1.0f) && !npcs.isDialogueOpen()
+                      && !shop.isOpen();
         if (canMove) {
             Vec2 axis = input.getMovementAxis();
             player.update(axis, dt, zones.getTileMap());
         }
 
         // A-button priority: dialogue close → world object → gather node → NPC
-        bool aConsumed = false;
+        // Skipped entirely while the shop is open — its A press was
+        // already consumed by shop.tryBuy() above.
+        bool aConsumed = shop.isOpen();
 
-        if (npcs.isDialogueOpen() && aPressed) {
+        if (!aConsumed && npcs.isDialogueOpen() && aPressed) {
             npcs.tryInteract(player.getCenterX(), player.getCenterY(),
                              aPressed, questMgr, playerState);
             aConsumed = true;
@@ -346,8 +408,11 @@ int main() {
             renderer.drawStatusMessage(statusMessage, alpha);
         }
 
-        // Bottom screen
-        if (npcs.isDialogueOpen()) {
+        // Bottom screen: shop → dialogue → quest HUD
+        if (shop.isOpen()) {
+            renderer.drawShop(shop.getCursor(), playerState.gold,
+                              shopMessage, shopMessageTimer);
+        } else if (npcs.isDialogueOpen()) {
             renderer.drawDialogue(npcs.getActiveDialogueNPC());
         } else {
             const char* displayText = questMgr.getActiveObjectiveText();

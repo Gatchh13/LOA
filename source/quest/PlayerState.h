@@ -1,11 +1,18 @@
 #pragma once
 
 //-----------------------------------------------------------------------------
-// PlayerState.h  (Milestone 6 — gathering nodes replace placeholder resources)
+// PlayerState.h  (Milestone 7 — Economy Loop: adds Inventory)
 //
 // Additions:
 //   wood  — used to repair bridges and clear fallen trees
 //   rope  — used to lower ladders
+//   inventory — fixed 8-slot bag for shop/quest items (see Inventory.h).
+//               Deliberately separate from wood/rope: those stay dedicated
+//               counters used by the repair/gathering systems untouched
+//               since Milestone 4/6. Unifying them into Inventory would
+//               touch working code for no benefit toward Milestone 7's
+//               goal (prove Gather → Store → Spend → Reward → Save → Load
+//               for shop/quest items specifically).
 //
 // PlayerState is a plain struct: no custom constructor. New-game starting
 // values are set explicitly via init() rather than baked into a constructor,
@@ -15,23 +22,24 @@
 // Starting resources are 0 as of Milestone 6 — GatherNodeManager (see
 // source/world/GatherNodeManager.h) now provides wood/rope via harvestable
 // nodes in Forest, so a fresh game requires gathering before repairing the
-// bridge (5 wood), ladder (3 rope), or fallen tree (8 wood). Previously
-// (Milestone 4–5) this struct granted a fixed starting amount as a
-// placeholder since no gathering system existed yet.
+// bridge (5 wood), ladder (3 rope), or fallen tree (8 wood).
 //
 // Save-friendly: struct embeds into SaveData verbatim. All fields are
-// plain integer types. No pointers. No dynamic allocation.
+// plain integer types or the POD Inventory struct. No pointers. No
+// dynamic allocation.
 //
-// Memory: 20 bytes.
+// Memory: 24 bytes (8 bytes original fields + 16 bytes inventory).
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
+#include "Inventory.h"
 
 struct PlayerState {
-    u32 gold;
-    u8  wood;
-    u8  rope;
-    u8  pad[2];   // align to 4 bytes
+    u32       gold;
+    u8        wood;
+    u8        rope;
+    u8        pad[2];   // align to 4 bytes
+    Inventory inventory;
 
     // Set new-game starting values. Call once when starting a fresh game
     // (not on load — SaveManager::apply() overwrites these fields directly
@@ -42,6 +50,7 @@ struct PlayerState {
         rope   = 0;
         pad[0] = 0;
         pad[1] = 0;
+        inventory.init();
     }
 
     void addGold(u32 amount)  { gold += amount; }

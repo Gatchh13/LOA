@@ -25,6 +25,7 @@
 #include "../world/TileMap.h"
 #include "../world/WorldObject.h"
 #include "../world/GatherNode.h"
+#include "../world/Shop.h"
 #include "../npc/NPC.h"
 #include "../npc/NPCManager.h"
 #include "../entities/AnimState.h"
@@ -71,6 +72,14 @@ public:
     // Draw dialogue box on bottom screen.
     // npc: the NPC currently speaking (must not be null).
     void drawDialogue(const NPC* npc);
+
+    // Draw the shop UI on the bottom screen: stock list with prices,
+    // cursor on the selected item, and the player's current gold.
+    // cursor/gold come from ShopUI::getCursor() / PlayerState::gold.
+    // lastMessage/messageTimer show inline feedback ("Not enough gold",
+    // "Purchased!") using the same message+timer pattern as
+    // WorldObjectManager/GatherNodeManager — nullptr/<=0 shows nothing.
+    void drawShop(int cursor, u32 gold, const char* lastMessage, float messageTimer);
 
     // Draw world objects (bridges, ladders, obstacles) in the current zone.
     // objects/count from WorldObjectManager::getObjects() / getObjectCount().

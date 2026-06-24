@@ -17,17 +17,21 @@
 //
 //   Reward:
 //     Applied once when the final step is completed.
-//     Currently only gold. Expandable to items later without changing the struct.
+//     Gold and/or item (Milestone 7 — see QuestReward).
 //
 // "The Missing Package" quest steps:
 //   Step 0: TALK_TO_NPC   (Mira, npc_id=1) — accept quest
 //   Step 1: REACH_MARKER  (Forest marker at tile 13,11)
 //   Step 2: RETURN_TO_NPC (Mira, npc_id=1) — hand in
+//   Reward: 50 gold + 1x Mira's Token (proves the item-reward path
+//   end to end with a non-purchasable item, not just a gold-equivalent
+//   consumable).
 //
 // Memory: all data is static const in ROM — 0 bytes RAM.
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
+#include "../items/ItemDef.h"
 
 //-----------------------------------------------------------------------------
 // QuestStepType
@@ -63,9 +67,17 @@ struct QuestStep {
 
 //-----------------------------------------------------------------------------
 // QuestReward
+//
+// item_id/item_qty added Milestone 7. item_qty == 0 means "no item
+// reward" — same empty-means-absent convention as InventorySlot, so no
+// separate "has item reward" bool is needed. A quest can grant gold,
+// an item, or both; QuestManager::applyReward() checks item_qty before
+// touching the inventory.
 //-----------------------------------------------------------------------------
 struct QuestReward {
     u32 gold;
+    u8  item_id;   // ItemID — only valid when item_qty > 0
+    u8  item_qty;  // 0 = no item reward
 };
 
 //-----------------------------------------------------------------------------
@@ -154,7 +166,7 @@ static const QuestDef s_questDefs[] = {
         "The Missing Package",
         s_missingPackageSteps,
         3,
-        { /*gold=*/ 50 }
+        { /*gold=*/ 50, /*item_id=*/ static_cast<u8>(ItemID::MIRAS_TOKEN), /*item_qty=*/ 1 }
     },
 };
 

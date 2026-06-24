@@ -16,10 +16,23 @@
 //   SaveManager::loadGame() rejects saves with mismatched versions and
 //   falls back to a new game rather than crashing on garbage data.
 //
+//   Milestone 7 bumps SAVE_VERSION 5 -> 6: reserved_inventory[64] is
+//   replaced by inventory[8] (16 bytes) + inventory_pad[48] (48 bytes,
+//   explicitly named so the remaining reserved headroom stays visible
+//   rather than silently shrinking). Total block size is unchanged at
+//   64 bytes, so sizeof(SaveData) does not change — only the meaning of
+//   those 64 bytes does. This is a hard version break, not a migration:
+//   consistent with how every prior version bump in this project has
+//   been handled (no migration code exists anywhere; validate() already
+//   rejects mismatched versions and the caller falls back to a new
+//   game). Pre-Milestone-7 saves (version 5 and earlier) will be
+//   rejected and the player will start a fresh game.
+//
 // FUTURE EXTENSION:
-//   Each "reserved" block is named for its intended future system.
-//   To add inventory: replace reserved_inventory[64] with an actual
-//   ItemSlot array. Bump SAVE_VERSION. No other changes needed.
+//   Each remaining "reserved" block is named for its intended future
+//   system. inventory_pad[48] is reserved specifically for inventory
+//   growth (more slots, or a stack count wider than u8) without another
+//   version bump touching unrelated blocks.
 //
 // SIZE: 236 bytes (well under the 8 KB target).
 //
@@ -31,11 +44,12 @@
 
 #include "../../include/types.h"
 #include "../quest/PlayerState.h"
+#include "../quest/Inventory.h"
 #include "../world/WorldObject.h"
 #include "../quest/QuestManager.h"
 #include <cstddef>  // offsetof
 
-static constexpr u16 SAVE_VERSION   = 5;     // bump on every layout change
+static constexpr u16 SAVE_VERSION   = 6;     // bump on every layout change
 static constexpr u32 SAVE_MAGIC     = 0x4C4F4100;  // "LOA\0"
 
 //-----------------------------------------------------------------------------
@@ -107,11 +121,22 @@ struct SaveData {
     u8  world_object_states[MAX_WORLD_OBJECTS]; // WorldObjectState cast to u8
 
     //-------------------------------------------------------------------------
+    // Inventory (16 bytes) — Milestone 7
+    // InventorySlot is POD ({u8 item_id; u8 quantity;}), so it serializes
+    // byte-for-byte without any conversion step in gather()/apply() beyond
+    // a plain loop. inventory_pad keeps the remaining headroom from the
+    // original 64-byte reserved_inventory block explicit and visible
+    // (see Inventory.h for why 8 slots was chosen) rather than silently
+    // shrinking the reserved space.
+    //-------------------------------------------------------------------------
+    InventorySlot inventory[INVENTORY_SLOTS];   // 8 * 2 bytes = 16 bytes
+    u8            inventory_pad[48];            // reserved for future inventory growth
+
+    //-------------------------------------------------------------------------
     // Reserved blocks for future systems
     // Replace with real structs when those milestones arrive.
     // Bump SAVE_VERSION when any block changes.
     //-------------------------------------------------------------------------
-    u8  reserved_inventory[64];    // Milestone 6: item slots
     u8  reserved_skills[32];       // Future: skill XP levels
     u8  reserved_reputation[16];   // Future: faction reputation
     u8  reserved_titles[8];        // Future: unlocked title bitfield

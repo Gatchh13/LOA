@@ -39,6 +39,11 @@ void SaveManager::gather(SaveData&                 out,
     out.wood = playerState.wood;
     out.rope = playerState.rope;
 
+    // Inventory (Milestone 7) — POD copy, slot order preserved.
+    for (int i = 0; i < INVENTORY_SLOTS; i++) {
+        out.inventory[i] = playerState.inventory.slots[i];
+    }
+
     // Quest states
     for (int i = 0; i < MAX_QUESTS; i++) {
         out.quest_status[i]       = static_cast<u8>(questMgr.getStatus(static_cast<u8>(i)));
@@ -90,6 +95,11 @@ void SaveManager::apply(const SaveData&      sd,
     playerState.gold = sd.gold;
     playerState.wood = sd.wood;
     playerState.rope = sd.rope;
+
+    // 5b. Restore inventory (Milestone 7)
+    for (int i = 0; i < INVENTORY_SLOTS; i++) {
+        playerState.inventory.slots[i] = sd.inventory[i];
+    }
 
     // 6. Restore quest states
     for (int i = 0; i < MAX_QUESTS; i++) {

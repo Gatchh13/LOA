@@ -1,0 +1,602 @@
+diff --git a/source/main.cpp b/source/main.cpp
+index d3082cf..3a405c7 100644
+--- a/source/main.cpp
++++ b/source/main.cpp
+@@ -1,24 +1,24 @@
+ //-----------------------------------------------------------------------------
+-// main.cpp  (Milestone 6 — Foundation of Feel)
++// main.cpp  (Milestone 7 — Economy Loop)
+ //
+-// New over Milestone 5:
+-//   - Boots into a TITLE_SCREEN state instead of straight into gameplay.
+-//     New Game / Continue (disabled with no save) / Credits.
+-//   - GameState/StateManager (source/core/GameState.h) now actually used —
+-//     previously declared but never wired into main().
+-//   - Gameplay setup (zone load, player construction, save/load) is now
+-//     deferred until the player actually chooses New Game or Continue on
+-//     the title screen, rather than running unconditionally before the
+-//     loop even starts.
+-//   - Player/NPC sprites now animate (facing + walk frame) via AnimState
+-//     — see source/entities/AnimState.h. Still fallback colored-rect art;
+-//     animation shows as a small facing notch + step bob until a real
+-//     sprite sheet exists.
++// New over Milestone 6:
++//   - Shop system: pressing Y while talking to Mira opens her stock list
++//     (ShopUI, see source/world/Shop.h). Up/Down selects, A buys
++//     (deducts gold, adds to inventory), B leaves. Reuses the existing
++//     dialogue-open/closed flow rather than adding a new GameState.
++//   - Inventory: PlayerState now owns an 8-slot Inventory (see
++//     source/quest/Inventory.h). Populated by shop purchases and quest
++//     rewards. Persisted in SaveData (version bumped 5 -> 6).
++//   - Quest rewards can now include an item alongside gold (see
++//     QuestDef.h's QuestReward) — "The Missing Package" grants Mira's
++//     Token on completion, proving the reward path for a non-purchasable
++//     item.
+ //
+ // Button map (gameplay):
+ //   D-Pad / Circle Pad : move
+-//   A                  : interact (NPC, world object)
+-//   B                  : close dialogue
++//   A                  : interact (NPC, world object, gather node) / buy (in shop)
++//   B                  : close dialogue / leave shop
++//   Y                  : open shop (only while talking to Mira)
+ //   SELECT             : save
+ //   START              : load
+ //   HOME               : quit (handled by aptMainLoop)
+@@ -42,6 +42,7 @@
+ #include "world/DayNight.h"
+ #include "world/WorldObjectManager.h"
+ #include "world/GatherNodeManager.h"
++#include "world/Shop.h"
+ #include "render/Camera.h"
+ #include "render/Renderer.h"
+ #include "entities/Player.h"
+@@ -83,6 +84,7 @@ int main() {
+     NPCManager         npcs;
+     WorldObjectManager worldObjects;
+     GatherNodeManager  gatherNodes;
++    ShopUI             shop;
+     Player             player(0.0f, 0.0f);
+     Camera              camera;
+ 
+@@ -96,6 +98,13 @@ int main() {
+     float       statusTimer   = 0.0f;
+     static constexpr float STATUS_DURATION = 3.0f;
+ 
++    // Shop feedback message state (purchase result) — same pattern as
++    // statusMessage above, scoped separately since it's shown inside the
++    // shop panel rather than as a top-screen banner.
++    const char* shopMessage      = nullptr;
++    float       shopMessageTimer = 0.0f;
++    static constexpr float SHOP_MESSAGE_DURATION = 2.0f;
++
+     //--------------------------------------------------------------------------
+     // startGame — runs once, when the player picks New Game or Continue on
+     // the title screen. Everything in here used to run unconditionally
+@@ -187,6 +196,7 @@ int main() {
+         //----------------------------------------------------------------------
+         bool aPressed      = input.isPressed(KEY_A);
+         bool bPressed      = input.isPressed(KEY_B);
++        bool yPressed      = input.isPressed(KEY_Y);
+         bool selectPressed = input.isPressed(KEY_SELECT);
+         bool startPressed  = input.isPressed(KEY_START);
+ 
+@@ -230,7 +240,8 @@ int main() {
+         //----------------------------------------------------------------------
+         // Update
+         //----------------------------------------------------------------------
+-        statusTimer  = statusTimer > 0.0f ? statusTimer - dt : 0.0f;
++        statusTimer      = statusTimer > 0.0f ? statusTimer - dt : 0.0f;
++        shopMessageTimer = shopMessageTimer > 0.0f ? shopMessageTimer - dt : 0.0f;
+ 
+         worldClock.update(dt);
+         dayNight.update(worldClock.getTimeAsFloat());
+@@ -240,20 +251,71 @@ int main() {
+ 
+         ZoneID currentZone = zones.getCurrentZoneDef().id;
+ 
++        // Open the shop: Y while talking to Mira specifically. Checked
++        // before the B-close-dialogue handling below so the same frame
++        // that opens the shop doesn't also immediately process a B press
++        // meant for something else.
++        if (yPressed && !shop.isOpen() && npcs.isDialogueOpen() &&
++            npcs.isTalkingToMerchant())
++        {
++            npcs.closeDialogue();
++            shop.open();
++            shopMessage      = nullptr;
++            shopMessageTimer = 0.0f;
++            LOG("Shop opened");
++        }
++
++        if (shop.isOpen()) {
++            // Shop has exclusive input while open: no movement, no
++            // dialogue, no world object/gather/NPC interaction this
++            // frame. Mirrors how dialogue already suspends movement via
++            // `canMove` below, just for the shop's own input set.
++            if (input.isPressed(KEY_DOWN)) shop.moveCursor(+1);
++            if (input.isPressed(KEY_UP))   shop.moveCursor(-1);
++
++            if (aPressed) {
++                ShopResult result = shop.tryBuy(playerState);
++                switch (result) {
++                    case ShopResult::PURCHASED:
++                        shopMessage = "Purchased!";
++                        break;
++                    case ShopResult::NOT_ENOUGH_GOLD:
++                        shopMessage = "Not enough gold.";
++                        break;
++                    case ShopResult::INVENTORY_FULL:
++                        shopMessage = "Inventory full.";
++                        break;
++                    case ShopResult::NONE:
++                    default:
++                        shopMessage = nullptr;
++                        break;
++                }
++                shopMessageTimer = SHOP_MESSAGE_DURATION;
++            }
++
++            if (bPressed) {
++                shop.close();
++                LOG("Shop closed");
++            }
++        }
++
+         if (bPressed && npcs.isDialogueOpen()) {
+             npcs.closeDialogue();
+         }
+ 
+-        bool canMove = (zones.getFadeAlpha() < 1.0f) && !npcs.isDialogueOpen();
++        bool canMove = (zones.getFadeAlpha() < 1.0f) && !npcs.isDialogueOpen()
++                      && !shop.isOpen();
+         if (canMove) {
+             Vec2 axis = input.getMovementAxis();
+             player.update(axis, dt, zones.getTileMap());
+         }
+ 
+         // A-button priority: dialogue close → world object → gather node → NPC
+-        bool aConsumed = false;
++        // Skipped entirely while the shop is open — its A press was
++        // already consumed by shop.tryBuy() above.
++        bool aConsumed = shop.isOpen();
+ 
+-        if (npcs.isDialogueOpen() && aPressed) {
++        if (!aConsumed && npcs.isDialogueOpen() && aPressed) {
+             npcs.tryInteract(player.getCenterX(), player.getCenterY(),
+                              aPressed, questMgr, playerState);
+             aConsumed = true;
+@@ -346,8 +408,11 @@ int main() {
+             renderer.drawStatusMessage(statusMessage, alpha);
+         }
+ 
+-        // Bottom screen
+-        if (npcs.isDialogueOpen()) {
++        // Bottom screen: shop → dialogue → quest HUD
++        if (shop.isOpen()) {
++            renderer.drawShop(shop.getCursor(), playerState.gold,
++                              shopMessage, shopMessageTimer);
++        } else if (npcs.isDialogueOpen()) {
+             renderer.drawDialogue(npcs.getActiveDialogueNPC());
+         } else {
+             const char* displayText = questMgr.getActiveObjectiveText();
+diff --git a/source/npc/NPCManager.cpp b/source/npc/NPCManager.cpp
+index 0afeea7..0b8c4ab 100644
+--- a/source/npc/NPCManager.cpp
++++ b/source/npc/NPCManager.cpp
+@@ -37,8 +37,8 @@ static void initBlacksmith(NPC& n) {
+ 
+ static void initMerchant(NPC& n) {
+     n.npc_id   = 1;
+-    strncpy(n.name,     "Mira",                                          MAX_NPC_NAME_LEN - 1);
+-    strncpy(n.dialogue, "Finest goods this side of the mountains!",      MAX_DIALOGUE_LEN - 1);
++    strncpy(n.name,     "Mira",                                                  MAX_NPC_NAME_LEN - 1);
++    strncpy(n.dialogue, "Finest goods this side of the mountains!\n(Y: Browse)", MAX_DIALOGUE_LEN - 1);
+     n.home_zone         = ZoneID::TOWN;
+     n.dialogue_override = nullptr;
+ 
+@@ -231,3 +231,12 @@ const NPC* NPCManager::getActiveDialogueNPC() const {
+     return &m_npcs[m_activeDialogueIndex];
+ }
+ 
++// Mira's npc_id — defined once here rather than repeating the literal 1
++// at every call site that needs to identify the shopkeeper specifically.
++static constexpr u8 MERCHANT_NPC_ID = 1;
++
++bool NPCManager::isTalkingToMerchant() const {
++    if (m_activeDialogueIndex < 0) return false;
++    return m_npcs[m_activeDialogueIndex].npc_id == MERCHANT_NPC_ID;
++}
++
+diff --git a/source/npc/NPCManager.h b/source/npc/NPCManager.h
+index 9f6f110..6f2cad2 100644
+--- a/source/npc/NPCManager.h
++++ b/source/npc/NPCManager.h
+@@ -66,6 +66,13 @@ public:
+     // The NPC whose dialogue is open. Only valid when isDialogueOpen() == true.
+     const NPC* getActiveDialogueNPC() const;
+ 
++    // True if the currently-open dialogue belongs to Mira (npc_id == 1,
++    // the shopkeeper). Used by main.cpp to gate the Y-button "browse
++    // wares" shop trigger (Milestone 7) — checked instead of hardcoding
++    // npc_id == 1 at the call site so the "who is the shopkeeper" fact
++    // lives in exactly one place.
++    bool isTalkingToMerchant() const;
++
+     // Access the NPC array for rendering.
+     const NPC* getNPCs()    const { return m_npcs; }
+     int        getNPCCount() const { return MAX_NPCS; }
+diff --git a/source/quest/PlayerState.h b/source/quest/PlayerState.h
+index 035a37e..5cefab1 100644
+--- a/source/quest/PlayerState.h
++++ b/source/quest/PlayerState.h
+@@ -1,11 +1,18 @@
+ #pragma once
+ 
+ //-----------------------------------------------------------------------------
+-// PlayerState.h  (Milestone 6 — gathering nodes replace placeholder resources)
++// PlayerState.h  (Milestone 7 — Economy Loop: adds Inventory)
+ //
+ // Additions:
+ //   wood  — used to repair bridges and clear fallen trees
+ //   rope  — used to lower ladders
++//   inventory — fixed 8-slot bag for shop/quest items (see Inventory.h).
++//               Deliberately separate from wood/rope: those stay dedicated
++//               counters used by the repair/gathering systems untouched
++//               since Milestone 4/6. Unifying them into Inventory would
++//               touch working code for no benefit toward Milestone 7's
++//               goal (prove Gather → Store → Spend → Reward → Save → Load
++//               for shop/quest items specifically).
+ //
+ // PlayerState is a plain struct: no custom constructor. New-game starting
+ // values are set explicitly via init() rather than baked into a constructor,
+@@ -15,23 +22,24 @@
+ // Starting resources are 0 as of Milestone 6 — GatherNodeManager (see
+ // source/world/GatherNodeManager.h) now provides wood/rope via harvestable
+ // nodes in Forest, so a fresh game requires gathering before repairing the
+-// bridge (5 wood), ladder (3 rope), or fallen tree (8 wood). Previously
+-// (Milestone 4–5) this struct granted a fixed starting amount as a
+-// placeholder since no gathering system existed yet.
++// bridge (5 wood), ladder (3 rope), or fallen tree (8 wood).
+ //
+ // Save-friendly: struct embeds into SaveData verbatim. All fields are
+-// plain integer types. No pointers. No dynamic allocation.
++// plain integer types or the POD Inventory struct. No pointers. No
++// dynamic allocation.
+ //
+-// Memory: 20 bytes.
++// Memory: 24 bytes (8 bytes original fields + 16 bytes inventory).
+ //-----------------------------------------------------------------------------
+ 
+ #include "../../include/types.h"
++#include "Inventory.h"
+ 
+ struct PlayerState {
+-    u32 gold;
+-    u8  wood;
+-    u8  rope;
+-    u8  pad[2];   // align to 4 bytes
++    u32       gold;
++    u8        wood;
++    u8        rope;
++    u8        pad[2];   // align to 4 bytes
++    Inventory inventory;
+ 
+     // Set new-game starting values. Call once when starting a fresh game
+     // (not on load — SaveManager::apply() overwrites these fields directly
+@@ -42,6 +50,7 @@ struct PlayerState {
+         rope   = 0;
+         pad[0] = 0;
+         pad[1] = 0;
++        inventory.init();
+     }
+ 
+     void addGold(u32 amount)  { gold += amount; }
+diff --git a/source/quest/QuestDef.h b/source/quest/QuestDef.h
+index 0a1dae1..ddef6e3 100644
+--- a/source/quest/QuestDef.h
++++ b/source/quest/QuestDef.h
+@@ -17,17 +17,21 @@
+ //
+ //   Reward:
+ //     Applied once when the final step is completed.
+-//     Currently only gold. Expandable to items later without changing the struct.
++//     Gold and/or item (Milestone 7 — see QuestReward).
+ //
+ // "The Missing Package" quest steps:
+ //   Step 0: TALK_TO_NPC   (Mira, npc_id=1) — accept quest
+ //   Step 1: REACH_MARKER  (Forest marker at tile 13,11)
+ //   Step 2: RETURN_TO_NPC (Mira, npc_id=1) — hand in
++//   Reward: 50 gold + 1x Mira's Token (proves the item-reward path
++//   end to end with a non-purchasable item, not just a gold-equivalent
++//   consumable).
+ //
+ // Memory: all data is static const in ROM — 0 bytes RAM.
+ //-----------------------------------------------------------------------------
+ 
+ #include "../../include/types.h"
++#include "../items/ItemDef.h"
+ 
+ //-----------------------------------------------------------------------------
+ // QuestStepType
+@@ -63,9 +67,17 @@ struct QuestStep {
+ 
+ //-----------------------------------------------------------------------------
+ // QuestReward
++//
++// item_id/item_qty added Milestone 7. item_qty == 0 means "no item
++// reward" — same empty-means-absent convention as InventorySlot, so no
++// separate "has item reward" bool is needed. A quest can grant gold,
++// an item, or both; QuestManager::applyReward() checks item_qty before
++// touching the inventory.
+ //-----------------------------------------------------------------------------
+ struct QuestReward {
+     u32 gold;
++    u8  item_id;   // ItemID — only valid when item_qty > 0
++    u8  item_qty;  // 0 = no item reward
+ };
+ 
+ //-----------------------------------------------------------------------------
+@@ -154,7 +166,7 @@ static const QuestDef s_questDefs[] = {
+         "The Missing Package",
+         s_missingPackageSteps,
+         3,
+-        { /*gold=*/ 50 }
++        { /*gold=*/ 50, /*item_id=*/ static_cast<u8>(ItemID::MIRAS_TOKEN), /*item_qty=*/ 1 }
+     },
+ };
+ 
+diff --git a/source/quest/QuestManager.cpp b/source/quest/QuestManager.cpp
+index 00bcab6..120c6b5 100644
+--- a/source/quest/QuestManager.cpp
++++ b/source/quest/QuestManager.cpp
+@@ -167,7 +167,22 @@ void QuestManager::advanceStep(u8 quest_id, PlayerState& playerState) {
+ 
+ void QuestManager::applyReward(const QuestDef& def, PlayerState& playerState) {
+     playerState.addGold(def.reward.gold);
+-    LOG("Reward applied: +%u gold (total: %u)", def.reward.gold, playerState.gold);
++
++    if (def.reward.item_qty > 0) {
++        bool added = playerState.inventory.addItem(def.reward.item_id, def.reward.item_qty);
++        if (!added) {
++            // Inventory was full — gold is still granted above, but the
++            // item is lost rather than blocking quest completion. Logged
++            // so it's visible during testing; not expected to happen in
++            // practice with only one item-rewarding quest and 8 slots.
++            WARN("Quest '%s' reward item lost — inventory full (item_id=%u, qty=%u)",
++                 def.title, def.reward.item_id, def.reward.item_qty);
++        }
++        LOG("Reward applied: +%u gold, +%u x item %u (total gold: %u)",
++            def.reward.gold, def.reward.item_qty, def.reward.item_id, playerState.gold);
++    } else {
++        LOG("Reward applied: +%u gold (total: %u)", def.reward.gold, playerState.gold);
++    }
+ }
+ 
+ bool QuestManager::hasActiveQuest() const {
+diff --git a/source/render/Renderer.cpp b/source/render/Renderer.cpp
+index f24b72e..52d3d0b 100644
+--- a/source/render/Renderer.cpp
++++ b/source/render/Renderer.cpp
+@@ -500,7 +500,95 @@ void Renderer::drawDialogue(const NPC* npc) {
+ }
+ 
+ //-----------------------------------------------------------------------------
+-// drawGatherNodes  (Milestone 6 — Foundation of Feel)
++// drawShop  (Milestone 7 — Economy Loop)
++//
++// Bottom-screen panel, same structural pattern as drawDialogue/
++// drawQuestHUD: dark backdrop, border line, text rows. Stock list (7
++// items max) fits on one screen with room to spare, so there's no
++// scrolling to implement.
++//-----------------------------------------------------------------------------
++void Renderer::drawShop(int cursor, u32 gold, const char* lastMessage, float messageTimer) {
++    C2D_SceneBegin(m_botTarget);
++    C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
++
++    drawColorRect(0.0f, 0.0f,
++                  static_cast<float>(SCREEN_BOT_W), static_cast<float>(SCREEN_BOT_H),
++                  C2D_Color32(10, 10, 20, 230));
++
++    // Header
++    C2D_Text header;
++    C2D_TextParse(&header, m_textBuf, "Mira's Wares");
++    C2D_TextOptimize(&header);
++    C2D_DrawText(&header, C2D_WithColor | C2D_AtBaseline,
++                 10.0f, 16.0f, 0.7f, 0.6f, 0.6f,
++                 C2D_Color32(255, 220, 80, 255));
++
++    // Gold, right-aligned-ish
++    char goldBuf[24];
++    snprintf(goldBuf, sizeof(goldBuf), "Gold: %u", gold);
++    C2D_Text goldText;
++    C2D_TextParse(&goldText, m_textBuf, goldBuf);
++    C2D_TextOptimize(&goldText);
++    C2D_DrawText(&goldText, C2D_WithColor | C2D_AtBaseline,
++                 230.0f, 16.0f, 0.7f, 0.5f, 0.5f,
++                 C2D_Color32(220, 200, 120, 255));
++
++    // Stock rows
++    constexpr float FIRST_ROW_Y = 36.0f;
++    constexpr float ROW_HEIGHT  = 20.0f;
++
++    for (int i = 0; i < MAX_SHOP_ITEMS; i++) {
++        const ItemDef& def = getItemDef(s_shopStock[i]);
++        bool isSelected = (i == cursor);
++
++        float rowY = FIRST_ROW_Y + i * ROW_HEIGHT;
++        u32 color = isSelected
++            ? C2D_Color32(255, 240, 180, 255)
++            : C2D_Color32(200, 200, 200, 255);
++
++        if (isSelected) {
++            drawColorRect(4.0f, rowY - 12.0f,
++                          static_cast<float>(SCREEN_BOT_W) - 8.0f, ROW_HEIGHT - 2.0f,
++                          C2D_Color32(60, 60, 90, 160));
++        }
++
++        char rowBuf[40];
++        snprintf(rowBuf, sizeof(rowBuf), "%s", def.name);
++        C2D_Text rowText;
++        C2D_TextParse(&rowText, m_textBuf, rowBuf);
++        C2D_TextOptimize(&rowText);
++        C2D_DrawText(&rowText, C2D_WithColor | C2D_AtBaseline,
++                     14.0f, rowY, 0.6f, 0.5f, 0.5f, color);
++
++        char priceBuf[16];
++        snprintf(priceBuf, sizeof(priceBuf), "%ug", def.base_price);
++        C2D_Text priceText;
++        C2D_TextParse(&priceText, m_textBuf, priceBuf);
++        C2D_TextOptimize(&priceText);
++        C2D_DrawText(&priceText, C2D_WithColor | C2D_AtBaseline,
++                     250.0f, rowY, 0.6f, 0.5f, 0.5f, color);
++    }
++
++    // Inline feedback message (purchase result), or the control hint.
++    if (lastMessage != nullptr && messageTimer > 0.0f) {
++        C2D_Text msgText;
++        C2D_TextParse(&msgText, m_textBuf, lastMessage);
++        C2D_TextOptimize(&msgText);
++        C2D_DrawText(&msgText, C2D_WithColor | C2D_AtBaseline,
++                     10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.5f, 0.5f,
++                     C2D_Color32(255, 200, 120, 255));
++    } else {
++        C2D_Text hint;
++        C2D_TextParse(&hint, m_textBuf, "Up/Down: Select   A: Buy   B: Leave");
++        C2D_TextOptimize(&hint);
++        C2D_DrawText(&hint, C2D_WithColor | C2D_AtBaseline,
++                     10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.42f, 0.42f,
++                     C2D_Color32(140, 140, 140, 255));
++    }
++
++    m_dialogueDrawnThisFrame = true;
++    C2D_SceneBegin(m_topTarget);
++}
+ //
+ // Placeholder visuals, same philosophy as drawWorldObjects: no sprites
+ // required. Wood nodes are a small stump (dark ring + lighter center).
+diff --git a/source/render/Renderer.h b/source/render/Renderer.h
+index 9f504f7..97145a8 100644
+--- a/source/render/Renderer.h
++++ b/source/render/Renderer.h
+@@ -25,6 +25,7 @@
+ #include "../world/TileMap.h"
+ #include "../world/WorldObject.h"
+ #include "../world/GatherNode.h"
++#include "../world/Shop.h"
+ #include "../npc/NPC.h"
+ #include "../npc/NPCManager.h"
+ #include "../entities/AnimState.h"
+@@ -72,6 +73,14 @@ public:
+     // npc: the NPC currently speaking (must not be null).
+     void drawDialogue(const NPC* npc);
+ 
++    // Draw the shop UI on the bottom screen: stock list with prices,
++    // cursor on the selected item, and the player's current gold.
++    // cursor/gold come from ShopUI::getCursor() / PlayerState::gold.
++    // lastMessage/messageTimer show inline feedback ("Not enough gold",
++    // "Purchased!") using the same message+timer pattern as
++    // WorldObjectManager/GatherNodeManager — nullptr/<=0 shows nothing.
++    void drawShop(int cursor, u32 gold, const char* lastMessage, float messageTimer);
++
+     // Draw world objects (bridges, ladders, obstacles) in the current zone.
+     // objects/count from WorldObjectManager::getObjects() / getObjectCount().
+     void drawWorldObjects(const WorldObject* objects, int count,
+diff --git a/source/save/SaveData.h b/source/save/SaveData.h
+index 4444eeb..1901bba 100644
+--- a/source/save/SaveData.h
++++ b/source/save/SaveData.h
+@@ -16,10 +16,23 @@
+ //   SaveManager::loadGame() rejects saves with mismatched versions and
+ //   falls back to a new game rather than crashing on garbage data.
+ //
++//   Milestone 7 bumps SAVE_VERSION 5 -> 6: reserved_inventory[64] is
++//   replaced by inventory[8] (16 bytes) + inventory_pad[48] (48 bytes,
++//   explicitly named so the remaining reserved headroom stays visible
++//   rather than silently shrinking). Total block size is unchanged at
++//   64 bytes, so sizeof(SaveData) does not change — only the meaning of
++//   those 64 bytes does. This is a hard version break, not a migration:
++//   consistent with how every prior version bump in this project has
++//   been handled (no migration code exists anywhere; validate() already
++//   rejects mismatched versions and the caller falls back to a new
++//   game). Pre-Milestone-7 saves (version 5 and earlier) will be
++//   rejected and the player will start a fresh game.
++//
+ // FUTURE EXTENSION:
+-//   Each "reserved" block is named for its intended future system.
+-//   To add inventory: replace reserved_inventory[64] with an actual
+-//   ItemSlot array. Bump SAVE_VERSION. No other changes needed.
++//   Each remaining "reserved" block is named for its intended future
++//   system. inventory_pad[48] is reserved specifically for inventory
++//   growth (more slots, or a stack count wider than u8) without another
++//   version bump touching unrelated blocks.
+ //
+ // SIZE: 236 bytes (well under the 8 KB target).
+ //
+@@ -31,11 +44,12 @@
+ 
+ #include "../../include/types.h"
+ #include "../quest/PlayerState.h"
++#include "../quest/Inventory.h"
+ #include "../world/WorldObject.h"
+ #include "../quest/QuestManager.h"
+ #include <cstddef>  // offsetof
+ 
+-static constexpr u16 SAVE_VERSION   = 5;     // bump on every layout change
++static constexpr u16 SAVE_VERSION   = 6;     // bump on every layout change
+ static constexpr u32 SAVE_MAGIC     = 0x4C4F4100;  // "LOA\0"
+ 
+ //-----------------------------------------------------------------------------
+@@ -106,12 +120,23 @@ struct SaveData {
+     //-------------------------------------------------------------------------
+     u8  world_object_states[MAX_WORLD_OBJECTS]; // WorldObjectState cast to u8
+ 
++    //-------------------------------------------------------------------------
++    // Inventory (16 bytes) — Milestone 7
++    // InventorySlot is POD ({u8 item_id; u8 quantity;}), so it serializes
++    // byte-for-byte without any conversion step in gather()/apply() beyond
++    // a plain loop. inventory_pad keeps the remaining headroom from the
++    // original 64-byte reserved_inventory block explicit and visible
++    // (see Inventory.h for why 8 slots was chosen) rather than silently
++    // shrinking the reserved space.
++    //-------------------------------------------------------------------------
++    InventorySlot inventory[INVENTORY_SLOTS];   // 8 * 2 bytes = 16 bytes
++    u8            inventory_pad[48];            // reserved for future inventory growth
++
+     //-------------------------------------------------------------------------
+     // Reserved blocks for future systems
+     // Replace with real structs when those milestones arrive.
+     // Bump SAVE_VERSION when any block changes.
+     //-------------------------------------------------------------------------
+-    u8  reserved_inventory[64];    // Milestone 6: item slots
+     u8  reserved_skills[32];       // Future: skill XP levels
+     u8  reserved_reputation[16];   // Future: faction reputation
+     u8  reserved_titles[8];        // Future: unlocked title bitfield
+diff --git a/source/save/SaveManager.cpp b/source/save/SaveManager.cpp
+index 85b53de..95df581 100644
+--- a/source/save/SaveManager.cpp
++++ b/source/save/SaveManager.cpp
+@@ -39,6 +39,11 @@ void SaveManager::gather(SaveData&                 out,
+     out.wood = playerState.wood;
+     out.rope = playerState.rope;
+ 
++    // Inventory (Milestone 7) — POD copy, slot order preserved.
++    for (int i = 0; i < INVENTORY_SLOTS; i++) {
++        out.inventory[i] = playerState.inventory.slots[i];
++    }
++
+     // Quest states
+     for (int i = 0; i < MAX_QUESTS; i++) {
+         out.quest_status[i]       = static_cast<u8>(questMgr.getStatus(static_cast<u8>(i)));
+@@ -91,6 +96,11 @@ void SaveManager::apply(const SaveData&      sd,
+     playerState.wood = sd.wood;
+     playerState.rope = sd.rope;
+ 
++    // 5b. Restore inventory (Milestone 7)
++    for (int i = 0; i < INVENTORY_SLOTS; i++) {
++        playerState.inventory.slots[i] = sd.inventory[i];
++    }
++
+     // 6. Restore quest states
+     for (int i = 0; i < MAX_QUESTS; i++) {
+         QuestStatus status = static_cast<QuestStatus>(sd.quest_status[i]);

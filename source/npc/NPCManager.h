@@ -66,6 +66,13 @@ public:
     // The NPC whose dialogue is open. Only valid when isDialogueOpen() == true.
     const NPC* getActiveDialogueNPC() const;
 
+    // True if the currently-open dialogue belongs to Mira (npc_id == 1,
+    // the shopkeeper). Used by main.cpp to gate the Y-button "browse
+    // wares" shop trigger (Milestone 7) — checked instead of hardcoding
+    // npc_id == 1 at the call site so the "who is the shopkeeper" fact
+    // lives in exactly one place.
+    bool isTalkingToMerchant() const;
+
     // Access the NPC array for rendering.
     const NPC* getNPCs()    const { return m_npcs; }
     int        getNPCCount() const { return MAX_NPCS; }

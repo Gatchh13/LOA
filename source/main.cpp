@@ -1,30 +1,36 @@
 //-----------------------------------------------------------------------------
-// main.cpp  (Milestone 8 — Combat Foundation)
+// main.cpp  (Milestone 9 — Equipment & Character Progression)
 //
-// New over Milestone 7:
-//   - Player HP (PlayerState.hp/maxHp, 100/100 start). Displayed on the
-//     bottom-screen HUD as simple "HP: 100/100" text.
-//   - Forest Wolf (EnemyManager, see source/combat/) — one enemy, an
-//     Idle/Chase/Attack/Return state machine, contact damage on the
-//     player, melee combat from the player (X), guaranteed Wolf Pelt
-//     loot on death.
-//   - Consumables: L uses a Healing Herb (+20 HP), R uses a Simple
-//     Potion (+50 HP). Dedicated keys, no menu screen — the simplest
-//     implementation that satisfies "no inventory menus if avoidable."
-//   - Death/respawn: HP reaching 0 teleports the player to the Town
-//     spawn point at full HP, costs a small flat amount of gold, and
-//     respawns all enemies. No death screen.
+// New over Milestone 8:
+//   - Selling: Mira now buys items too. The shop's single stock list
+//     (ShopUI, unchanged shape) grew to include sellable-but-not-
+//     buyable items (Wolf Pelt); A buys the item under the cursor, X
+//     sells one of it from the inventory. 50% of buy price, no new
+//     shop state.
+//   - Equipment: two slots (weapon, armor) on PlayerState. Three new
+//     items (Wooden Sword, Leather Armor, Iron Sword), all purchasable.
+//     START opens a minimal text-only inventory screen (cursor + A to
+//     equip/unequip + B to exit) — this replaces the Milestone 8
+//     in-gameplay "press START to reload" feature, since every other
+//     button is now claimed; Continue from the title screen remains
+//     the only load path.
+//   - Combat formula now includes equipment: player damage = base
+//     attack + weapon bonus; enemy contact damage = enemy attack -
+//     armor bonus (minimum 1).
+//   - HUD gained an Attack/Defense line (text only, no new panel).
+//   - The Missing Package quest now rewards a Wooden Sword instead of
+//     Mira's Token, proving the quest -> equipment path.
 //
 // Button map (gameplay):
 //   D-Pad / Circle Pad : move
-//   A                  : interact (NPC, world object, gather node) / buy (in shop)
-//   B                  : close dialogue / leave shop
-//   X                  : melee attack
+//   A                  : interact (NPC, world object, gather node) / buy (shop) / equip-unequip (inventory)
+//   B                  : close dialogue / leave shop / exit inventory
+//   X                  : melee attack / sell (in shop)
 //   L                  : use Healing Herb (+20 HP)
 //   R                  : use Simple Potion (+50 HP)
 //   Y                  : open shop (only while talking to Mira)
+//   START              : open inventory/equip screen
 //   SELECT             : save
-//   START              : load
 //   HOME               : quit (handled by aptMainLoop)
 //
 // Button map (title screen):
@@ -48,6 +54,7 @@
 #include "world/GatherNodeManager.h"
 #include "world/Shop.h"
 #include "combat/EnemyManager.h"
+#include "quest/InventoryScreen.h"
 #include "render/Camera.h"
 #include "render/Renderer.h"
 #include "entities/Player.h"
@@ -91,6 +98,7 @@ int main() {
     GatherNodeManager  gatherNodes;
     EnemyManager       enemies;
     ShopUI             shop;
+    InventoryScreen    invScreen;
     Player             player(0.0f, 0.0f);
     Camera              camera;
 
@@ -117,6 +125,17 @@ int main() {
     const char* combatMessage      = nullptr;
     float       combatMessageTimer = 0.0f;
     static constexpr float COMBAT_MESSAGE_DURATION = 2.0f;
+
+    // Inventory screen feedback message (equip/unequip results,
+    // Milestone 9) — same message+timer pattern, shown as a top-screen
+    // banner via drawStatusMessage rather than inside the inventory
+    // panel itself, since equip/unequip is a quick confirm-and-continue
+    // action, not something that needs its own dedicated message slot
+    // inside the list (unlike the shop, where the message sits next to
+    // the transaction that caused it).
+    const char* invMessage      = nullptr;
+    float       invMessageTimer = 0.0f;
+    static constexpr float INV_MESSAGE_DURATION = 2.0f;
 
     //--------------------------------------------------------------------------
     // startGame — runs once, when the player picks New Game or Continue on
@@ -218,7 +237,18 @@ int main() {
         bool startPressed  = input.isPressed(KEY_START);
 
         //----------------------------------------------------------------------
-        // Save / Load (SELECT / START)
+        // Save (SELECT). START opens the inventory screen — see below,
+        // after shop/dialogue state is known, since opening it is itself
+        // a state change that should be checked alongside those.
+        //
+        // Milestone 8 had an in-gameplay "press START to reload your
+        // last save without quitting" feature here. It's removed in
+        // Milestone 9: every other button is now claimed (X=attack,
+        // L/R=consumables, Y=shop-trigger, A=interact/buy, B=close/
+        // leave), and START is the assignment's explicit choice for
+        // opening the inventory screen. Continue from the title screen
+        // remains the only load path — a deliberate scope decision, not
+        // an oversight (see the Milestone 9 design doc's risk section).
         //----------------------------------------------------------------------
         if (selectPressed) {
             bool ok = SaveManager::saveGame(
@@ -229,36 +259,12 @@ int main() {
             LOG("Save triggered: %s", statusMessage);
         }
 
-        if (startPressed) {
-            if (SaveManager::hasSave()) {
-                bool ok = SaveManager::loadGame(
-                    player, zones, worldClock,
-                    playerState, questMgr, worldObjects,
-                    zones.getTileMap());
-                if (ok) {
-                    // SaveManager::apply() already applied world object
-                    // overrides for the loaded zone.
-                    npcs.init(worldClock.getTotalMinutes());
-                    camera.update(player.getCenterX(), player.getCenterY(),
-                                  zones.getTileMap().getWidthPixels(),
-                                  zones.getTileMap().getHeightPixels());
-                    statusMessage = "Game Loaded.";
-                } else {
-                    statusMessage = "Load Failed!";
-                }
-                statusTimer = STATUS_DURATION;
-                LOG("Load triggered: %s", statusMessage);
-            } else {
-                statusMessage = "No Save Found.";
-                statusTimer   = STATUS_DURATION;
-            }
-        }
-
         //----------------------------------------------------------------------
         // Update
         //----------------------------------------------------------------------
         statusTimer      = statusTimer > 0.0f ? statusTimer - dt : 0.0f;
         shopMessageTimer = shopMessageTimer > 0.0f ? shopMessageTimer - dt : 0.0f;
+        invMessageTimer  = invMessageTimer > 0.0f ? invMessageTimer - dt : 0.0f;
 
         worldClock.update(dt);
         dayNight.update(worldClock.getTimeAsFloat());
@@ -302,7 +308,43 @@ int main() {
                     case ShopResult::INVENTORY_FULL:
                         shopMessage = "Inventory full.";
                         break;
+                    case ShopResult::NOT_BUYABLE:
+                        shopMessage = "Not for sale.";
+                        break;
                     case ShopResult::NONE:
+                    case ShopResult::SOLD:
+                    case ShopResult::NOT_SELLABLE:
+                    case ShopResult::NOTHING_TO_SELL:
+                    default:
+                        shopMessage = nullptr;
+                        break;
+                }
+                shopMessageTimer = SHOP_MESSAGE_DURATION;
+            }
+
+            // Sell (Milestone 9, Feature 1). X is the player's attack
+            // button during normal gameplay, but attack input is
+            // already gated off while the shop is open (see
+            // `interactionSuspended` below), so there's no conflict
+            // reusing it here for sell, exactly as the assignment
+            // prefers ("A = Buy, X = Sell while inside the shop").
+            if (xPressed) {
+                ShopResult result = shop.trySell(playerState);
+                switch (result) {
+                    case ShopResult::SOLD:
+                        shopMessage = "Sold!";
+                        break;
+                    case ShopResult::NOTHING_TO_SELL:
+                        shopMessage = "You don't have one.";
+                        break;
+                    case ShopResult::NOT_SELLABLE:
+                        shopMessage = "Mira won't buy that.";
+                        break;
+                    case ShopResult::NONE:
+                    case ShopResult::PURCHASED:
+                    case ShopResult::NOT_ENOUGH_GOLD:
+                    case ShopResult::INVENTORY_FULL:
+                    case ShopResult::NOT_BUYABLE:
                     default:
                         shopMessage = nullptr;
                         break;
@@ -316,21 +358,60 @@ int main() {
             }
         }
 
+        // Open the inventory/equip screen: START, from normal gameplay
+        // (Milestone 9, Feature 4). Suspended while talking, shopping,
+        // or already in the inventory screen — the same "one panel at a
+        // time" rule the shop already follows relative to dialogue.
+        if (startPressed && !invScreen.isOpen() && !shop.isOpen() && !npcs.isDialogueOpen()) {
+            invScreen.open();
+            invMessage      = nullptr;
+            invMessageTimer = 0.0f;
+            LOG("Inventory screen opened");
+        }
+
+        if (invScreen.isOpen()) {
+            if (input.isPressed(KEY_DOWN)) invScreen.moveCursor(+1);
+            if (input.isPressed(KEY_UP))   invScreen.moveCursor(-1);
+
+            if (aPressed) {
+                InventoryAction result = invScreen.tryActivate(playerState);
+                switch (result) {
+                    case InventoryAction::EQUIPPED:
+                        invMessage = "Equipped.";
+                        break;
+                    case InventoryAction::UNEQUIPPED:
+                        invMessage = "Unequipped.";
+                        break;
+                    case InventoryAction::NONE:
+                    default:
+                        invMessage = nullptr;
+                        break;
+                }
+                invMessageTimer = INV_MESSAGE_DURATION;
+            }
+
+            if (bPressed) {
+                invScreen.close();
+                LOG("Inventory screen closed");
+            }
+        }
+
         if (bPressed && npcs.isDialogueOpen()) {
             npcs.closeDialogue();
         }
 
         bool canMove = (zones.getFadeAlpha() < 1.0f) && !npcs.isDialogueOpen()
-                      && !shop.isOpen();
+                      && !shop.isOpen() && !invScreen.isOpen();
         if (canMove) {
             Vec2 axis = input.getMovementAxis();
             player.update(axis, dt, zones.getTileMap());
         }
 
         // A-button priority: dialogue close → world object → gather node → NPC
-        // Skipped entirely while the shop is open — its A press was
-        // already consumed by shop.tryBuy() above.
-        bool aConsumed = shop.isOpen();
+        // Skipped entirely while the shop or inventory screen is open —
+        // their A press was already consumed by shop.tryBuy() or
+        // invScreen.tryActivate() above.
+        bool aConsumed = shop.isOpen() || invScreen.isOpen();
 
         if (!aConsumed && npcs.isDialogueOpen() && aPressed) {
             npcs.tryInteract(player.getCenterX(), player.getCenterY(),
@@ -363,7 +444,7 @@ int main() {
         //----------------------------------------------------------------------
         combatMessageTimer = combatMessageTimer > 0.0f ? combatMessageTimer - dt : 0.0f;
 
-        bool interactionSuspended = npcs.isDialogueOpen() || shop.isOpen();
+        bool interactionSuspended = npcs.isDialogueOpen() || shop.isOpen() || invScreen.isOpen();
 
         // Enemy AI/contact-damage always ticks — an enemy mid-bite
         // shouldn't freeze just because a menu opened elsewhere. This is
@@ -498,12 +579,17 @@ int main() {
                                   zones.getNameAlpha());
         }
 
-        // Save/load status message, or combat feedback if more recent —
-        // reuses the existing message/timer banner rather than adding a
-        // second on-screen text system, per the Milestone 8 assignment's
-        // explicit instruction to reuse the project's message/timer
-        // pattern instead of building new UI.
-        if (combatMessageTimer > 0.0f && combatMessage != nullptr) {
+        // Save/load status message, combat feedback, or inventory
+        // equip/unequip feedback if more recent — reuses the existing
+        // message/timer banner rather than adding a second on-screen
+        // text system, per the Milestone 8 assignment's explicit
+        // instruction to reuse the project's message/timer pattern
+        // instead of building new UI (Milestone 9 follows the same rule
+        // for the new inventory screen's feedback).
+        if (invMessageTimer > 0.0f && invMessage != nullptr) {
+            float alpha = (invMessageTimer < 0.5f) ? invMessageTimer / 0.5f : 1.0f;
+            renderer.drawStatusMessage(invMessage, alpha);
+        } else if (combatMessageTimer > 0.0f && combatMessage != nullptr) {
             float alpha = (combatMessageTimer < 0.5f) ? combatMessageTimer / 0.5f : 1.0f;
             renderer.drawStatusMessage(combatMessage, alpha);
         } else if (statusTimer > 0.0f && statusMessage != nullptr) {
@@ -511,8 +597,10 @@ int main() {
             renderer.drawStatusMessage(statusMessage, alpha);
         }
 
-        // Bottom screen: shop → dialogue → quest HUD
-        if (shop.isOpen()) {
+        // Bottom screen: inventory screen → shop → dialogue → quest HUD
+        if (invScreen.isOpen()) {
+            renderer.drawInventoryScreen(invScreen.getCursor(), playerState);
+        } else if (shop.isOpen()) {
             renderer.drawShop(shop.getCursor(), playerState.gold,
                               shopMessage, shopMessageTimer);
         } else if (npcs.isDialogueOpen()) {
@@ -527,7 +615,8 @@ int main() {
                 displayText = enemies.getLastMessage();
             }
             renderer.drawQuestHUD(displayText, playerState.hp, playerState.maxHp,
-                                  playerState.gold, playerState.wood, playerState.rope);
+                                  playerState.gold, playerState.wood, playerState.rope,
+                                  playerState.getAttack(), playerState.getDefense());
         }
 
         renderer.endFrame();

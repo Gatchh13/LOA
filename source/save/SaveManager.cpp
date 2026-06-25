@@ -46,6 +46,10 @@ void SaveManager::gather(SaveData&                 out,
         out.inventory[i] = playerState.inventory.slots[i];
     }
 
+    // Equipment (Milestone 9)
+    out.equipped_weapon = playerState.equippedWeapon;
+    out.equipped_armor  = playerState.equippedArmor;
+
     // Quest states
     for (int i = 0; i < MAX_QUESTS; i++) {
         out.quest_status[i]       = static_cast<u8>(questMgr.getStatus(static_cast<u8>(i)));
@@ -105,15 +109,20 @@ void SaveManager::apply(const SaveData&      sd,
         playerState.inventory.slots[i] = sd.inventory[i];
     }
 
+    // 5c. Restore equipment (Milestone 9)
+    playerState.equippedWeapon = sd.equipped_weapon;
+    playerState.equippedArmor  = sd.equipped_armor;
+
     // 6. Restore quest states
     for (int i = 0; i < MAX_QUESTS; i++) {
         QuestStatus status = static_cast<QuestStatus>(sd.quest_status[i]);
         questMgr.setStateFromSave(static_cast<u8>(i), status, sd.quest_current_step[i]);
     }
 
-    LOG("SaveManager: loaded — zone=%d pos=(%.0f,%.0f) time=%d gold=%u wood=%u rope=%u hp=%u/%u",
+    LOG("SaveManager: loaded — zone=%d pos=(%.0f,%.0f) time=%d gold=%u wood=%u rope=%u hp=%u/%u weapon=%u armor=%u",
         sd.zone_id, sd.player_x, sd.player_y, sd.total_minutes,
-        sd.gold, sd.wood, sd.rope, sd.hp, sd.maxHp);
+        sd.gold, sd.wood, sd.rope, sd.hp, sd.maxHp,
+        sd.equipped_weapon, sd.equipped_armor);
 }
 
 //-----------------------------------------------------------------------------

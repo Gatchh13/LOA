@@ -1,0 +1,1252 @@
+diff --git a/source/combat/EnemyManager.cpp b/source/combat/EnemyManager.cpp
+index e552c7a..116c80e 100644
+--- a/source/combat/EnemyManager.cpp
++++ b/source/combat/EnemyManager.cpp
+@@ -188,9 +188,20 @@ void EnemyManager::update(ZoneID currentZone, float playerX, float playerY,
+             e.attackCooldown -= dt;
+             if (e.attackCooldown <= 0.0f) {
+                 e.attackCooldown = ENEMY_ATTACK_INTERVAL;
+-                playerState.damage(e.contactDamage);
+-                LOG("Enemy %d bit the player for %u damage. Player HP: %u/%u",
+-                    e.id, e.contactDamage, playerState.hp, playerState.maxHp);
++
++                // Milestone 9 combat formula: enemy_attack - armor_bonus,
++                // minimum 1. Computed in int to avoid u16 underflow if
++                // defense ever exceeded attack (clamped explicitly below
++                // rather than relying on unsigned wraparound never
++                // happening to line up correctly).
++                int rawDamage = static_cast<int>(e.contactDamage)
++                              - static_cast<int>(playerState.getDefense());
++                u16 dmg = static_cast<u16>(rawDamage < 1 ? 1 : rawDamage);
++
++                playerState.damage(dmg);
++                LOG("Enemy %d bit the player for %u damage (atk=%u def=%u). Player HP: %u/%u",
++                    e.id, dmg, e.contactDamage, playerState.getDefense(),
++                    playerState.hp, playerState.maxHp);
+             }
+         }
+     }
+@@ -238,11 +249,16 @@ AttackResult EnemyManager::tryAttack(float playerX, float playerY, Facing player
+     if (bestIdx < 0) return AttackResult::NONE;
+ 
+     Enemy& e = m_enemies[bestIdx];
+-    u16 dmg = PLAYER_ATTACK_DAMAGE;
++    // Milestone 9 combat formula: base_attack + weapon_bonus, via
++    // PlayerState::getAttack() (see PlayerState.h). No minimum-1 clamp
++    // needed here — unlike enemy attack minus armor, there's no
++    // defense-side subtraction on the player's outgoing damage, so it
++    // can never go below PLAYER_BASE_ATTACK.
++    u16 dmg = playerState.getAttack();
+     e.hp = (dmg >= e.hp) ? 0 : static_cast<u16>(e.hp - dmg);
+ 
+-    LOG("Player hit enemy %d for %u damage. Enemy HP: %u/%u",
+-        e.id, dmg, e.hp, e.maxHp);
++    LOG("Player hit enemy %d for %u damage (atk=%u). Enemy HP: %u/%u",
++        e.id, dmg, playerState.getAttack(), e.hp, e.maxHp);
+ 
+     if (e.hp == 0) {
+         // Death: no corpse, no death animation — deactivate immediately.
+diff --git a/source/combat/EnemyManager.h b/source/combat/EnemyManager.h
+index 7f7b43b..1c980b5 100644
+--- a/source/combat/EnemyManager.h
++++ b/source/combat/EnemyManager.h
+@@ -34,7 +34,11 @@
+ // since they describe the player's attack, not enemy data.
+ static constexpr float ATTACK_RANGE_PX     = 20.0f;  // melee reach from player center
+ static constexpr float ATTACK_COOLDOWN_SEC = 0.5f;   // time between player attacks
+-static constexpr u16   PLAYER_ATTACK_DAMAGE = 15;
++// Milestone 9: player damage is now PlayerState::getAttack() (base +
++// weapon bonus), not a flat constant — see EnemyManager.cpp::tryAttack().
++// The old PLAYER_ATTACK_DAMAGE constant is gone rather than left unused
++// alongside the new formula, which would invite using the stale one by
++// accident.
+ 
+ // Enemy AI tuning constants.
+ static constexpr float ENEMY_DETECT_RANGE_PX = 64.0f;  // Idle -> Chase threshold
+diff --git a/source/items/ItemDef.h b/source/items/ItemDef.h
+index 7640a18..48dbd22 100644
+--- a/source/items/ItemDef.h
++++ b/source/items/ItemDef.h
+@@ -25,26 +25,40 @@
+ // way the shop and quest-reward paths already do, without needing a
+ // separate "loot" code path through Inventory.
+ //
++// Milestone 9 adds:
++//   - sellable: true unless explicitly excluded. Wolf Pelt is sellable
++//     (the whole point of Feature 1); Mira's Token is the one exclusion,
++//     matching the assignment's explicit "Mira's Token cannot be sold."
++//     This is a general default with one carve-out, not an enumerated
++//     whitelist — selling is "can sell unless told otherwise," which
++//     reads more naturally against the assignment's wording than a
++//     second parallel "what's sellable" list that could drift out of
++//     sync with this one.
++//   - equip_slot / attack_bonus / defense_bonus: equipment data. Only
++//     items with equip_slot != EquipSlot::NONE use attack_bonus/
++//     defense_bonus; every consumable/material leaves both at 0, which
++//     is also their natural "no bonus" value, so no separate "is this
++//     equipment" check is needed beyond reading equip_slot itself.
++//   - 3 new equipment items: Wooden Sword (+5 attack), Leather Armor
++//     (+3 defense), Iron Sword (+10 attack). MAX_ITEMS 9 -> 12.
++//
+ // MEMORY FOOTPRINT:
+ //   ItemDef is { const char* name; u8 id; u8 base_price; bool buyable;
+-//   u16 heal_amount; }. On a 32-bit ARM target: 4 (pointer) + 1 + 1 + 1
+-//   (three single-byte fields) + 1 pad + 2 (u16, naturally 2-byte
+-//   aligned) = 10, rounded up to 12 bytes to keep the array's stride a
+-//   multiple of the pointer's 4-byte alignment. This grew from the
+-//   Milestone 7 figure of 8 bytes when heal_amount (u16) was added in
+-//   Milestone 8 — verified by trying several field orderings, none of
+-//   which recovers the original 8 bytes once a u16 is present alongside
+-//   the pointer and three u8s; the extra 4 bytes/item is unavoidable,
+-//   not a missed optimization. 9 items * 12 bytes = 108 bytes total, in
+-//   .rodata (compiled into the executable, not the 64MB RAM ceiling —
+-//   same as QuestDef/ZoneData). Runtime RAM cost for this file: 0 bytes.
+-//   It is referenced by index/pointer, never copied.
++//   bool sellable; u16 heal_amount; EquipSlot equip_slot; u8 attack_bonus;
++//   u8 defense_bonus; }. On a 32-bit ARM target: 4 (pointer) + 1+1+1+1
++//   (id, base_price, buyable, sellable) + 2 (heal_amount, 2-byte aligned)
++//   + 1 (equip_slot, u8 enum) + 1 + 1 (attack_bonus, defense_bonus) = 13,
++//   rounded up to 16 bytes to keep the array's stride a multiple of the
++//   pointer's 4-byte alignment. 12 items * 16 bytes = 192 bytes total,
++//   in .rodata (compiled into the executable, not the 64MB RAM ceiling
++//   — same as QuestDef/ZoneData). Runtime RAM cost for this file: 0
++//   bytes. It is referenced by index/pointer, never copied.
+ //
+ //   Note: this build environment's test compiler is 64-bit, where
+ //   sizeof(ItemDef) reports a larger figure (8-byte pointer) than the
+-//   12-byte ARM32 figure above — that is a property of the test host,
++//   16-byte ARM32 figure above — that is a property of the test host,
+ //   not the 3DS target. devkitARM compiles for 32-bit ARM, where the
+-//   12-byte figure applies.
++//   16-byte figure applies.
+ //-----------------------------------------------------------------------------
+ 
+ #include "../../include/types.h"
+@@ -53,19 +67,32 @@
+ // ItemID registry — see header comment above.
+ //-----------------------------------------------------------------------------
+ enum class ItemID : u8 {
+-    HEALING_HERB  = 0,
+-    TORCH         = 1,
+-    SIMPLE_POTION = 2,
+-    TRAIL_RATION  = 3,
+-    LANTERN_OIL   = 4,
+-    SPARE_CORD    = 5,
+-    MIRAS_TOKEN   = 6,  // quest-reward only, not sold in the shop
+-    IRON_NAIL     = 7,
+-    WOLF_PELT     = 8,  // Milestone 8 — loot-only, not sold in the shop
++    HEALING_HERB   = 0,
++    TORCH          = 1,
++    SIMPLE_POTION  = 2,
++    TRAIL_RATION   = 3,
++    LANTERN_OIL    = 4,
++    SPARE_CORD     = 5,
++    MIRAS_TOKEN    = 6,  // quest-reward only, not sold in the shop
++    IRON_NAIL      = 7,
++    WOLF_PELT      = 8,  // Milestone 8 — loot-only, not bought, but sellable
++    WOODEN_SWORD   = 9,  // Milestone 9 — equipment: weapon
++    LEATHER_ARMOR  = 10, // Milestone 9 — equipment: armor
++    IRON_SWORD     = 11, // Milestone 9 — equipment: weapon
+     COUNT  // keep last — number of items currently defined
+ };
+ 
+-static constexpr int MAX_ITEMS = 9;
++static constexpr int MAX_ITEMS = 12;
++
++// Which equipment slot an item occupies. NONE = not equipment (the
++// default for every consumable/material item). Only WEAPON and ARMOR
++// exist per the Milestone 9 assignment's explicit "only two slots,
++// nothing else" scope rule.
++enum class EquipSlot : u8 {
++    NONE   = 0,
++    WEAPON = 1,
++    ARMOR  = 2,
++};
+ 
+ //-----------------------------------------------------------------------------
+ // ItemDef — one item's static data. Pointer field first — see memory
+@@ -74,25 +101,42 @@ static constexpr int MAX_ITEMS = 9;
+ // heal_amount: HP restored on use, 0 = not a healing consumable (the
+ // same zero-means-absent convention as InventorySlot.quantity and
+ // QuestReward.item_qty, rather than a separate "is_consumable" bool).
++//
++// equip_slot/attack_bonus/defense_bonus: equipment data (Milestone 9).
++// Only items with equip_slot != EquipSlot::NONE use the bonus fields —
++// every other item leaves them at their natural zero value, so reading
++// equip_slot is the one check needed to know whether an item is
++// equipment at all.
+ //-----------------------------------------------------------------------------
+ struct ItemDef {
+     const char* name;
+     u8          id;
+-    u8          base_price;   // gold cost in the shop; ignored if !buyable
+-    bool        buyable;      // true = appears in Mira's stock list
+-    u16         heal_amount;  // HP restored on use; 0 = not healing-usable
++    u8          base_price;    // gold cost to buy (if buyable) and the basis
++                                // for sell price (if sellable) — see
++                                // Shop.h's getSellPrice(). Set even for
++                                // non-buyable-but-sellable items like Wolf
++                                // Pelt, where it only ever feeds sell price.
++    bool        buyable;       // true = appears in Mira's buy stock
++    bool        sellable;      // true = Mira will buy this from the player
++    u16         heal_amount;   // HP restored on use; 0 = not healing-usable
++    EquipSlot   equip_slot;    // which slot this occupies; NONE = not equipment
++    u8          attack_bonus;  // added to player's base attack when equipped
++    u8          defense_bonus; // subtracted from incoming enemy damage when equipped
+ };
+ 
+ static const ItemDef s_itemDefs[] = {
+-    { "Healing Herb",  static_cast<u8>(ItemID::HEALING_HERB),   8, true,   20 },
+-    { "Torch",         static_cast<u8>(ItemID::TORCH),          5, true,    0 },
+-    { "Simple Potion", static_cast<u8>(ItemID::SIMPLE_POTION), 15, true,   50 },
+-    { "Trail Ration",  static_cast<u8>(ItemID::TRAIL_RATION),   6, true,    0 },
+-    { "Lantern Oil",   static_cast<u8>(ItemID::LANTERN_OIL),   10, true,    0 },
+-    { "Spare Cord",    static_cast<u8>(ItemID::SPARE_CORD),     4, true,    0 },
+-    { "Mira's Token",  static_cast<u8>(ItemID::MIRAS_TOKEN),    0, false,   0 },
+-    { "Iron Nail",     static_cast<u8>(ItemID::IRON_NAIL),      3, true,    0 },
+-    { "Wolf Pelt",     static_cast<u8>(ItemID::WOLF_PELT),      0, false,   0 },
++    { "Healing Herb",  static_cast<u8>(ItemID::HEALING_HERB),    8, true,  true,  20, EquipSlot::NONE,   0,  0 },
++    { "Torch",         static_cast<u8>(ItemID::TORCH),           5, true,  true,   0, EquipSlot::NONE,   0,  0 },
++    { "Simple Potion", static_cast<u8>(ItemID::SIMPLE_POTION),  15, true,  true,  50, EquipSlot::NONE,   0,  0 },
++    { "Trail Ration",  static_cast<u8>(ItemID::TRAIL_RATION),    6, true,  true,   0, EquipSlot::NONE,   0,  0 },
++    { "Lantern Oil",   static_cast<u8>(ItemID::LANTERN_OIL),    10, true,  true,   0, EquipSlot::NONE,   0,  0 },
++    { "Spare Cord",    static_cast<u8>(ItemID::SPARE_CORD),      4, true,  true,   0, EquipSlot::NONE,   0,  0 },
++    { "Mira's Token",  static_cast<u8>(ItemID::MIRAS_TOKEN),     0, false, false,  0, EquipSlot::NONE,   0,  0 },
++    { "Iron Nail",     static_cast<u8>(ItemID::IRON_NAIL),       3, true,  true,   0, EquipSlot::NONE,   0,  0 },
++    { "Wolf Pelt",     static_cast<u8>(ItemID::WOLF_PELT),      10, false, true,   0, EquipSlot::NONE,   0,  0 },
++    { "Wooden Sword",  static_cast<u8>(ItemID::WOODEN_SWORD),   12, true,  true,   0, EquipSlot::WEAPON, 5,  0 },
++    { "Leather Armor", static_cast<u8>(ItemID::LEATHER_ARMOR),  14, true,  true,   0, EquipSlot::ARMOR,  0,  3 },
++    { "Iron Sword",    static_cast<u8>(ItemID::IRON_SWORD),     30, true,  true,   0, EquipSlot::WEAPON, 10, 0 },
+ };
+ 
+ static constexpr int ITEM_DEF_COUNT = sizeof(s_itemDefs) / sizeof(s_itemDefs[0]);
+diff --git a/source/main.cpp b/source/main.cpp
+index acd75cb..618754f 100644
+--- a/source/main.cpp
++++ b/source/main.cpp
+@@ -1,30 +1,36 @@
+ //-----------------------------------------------------------------------------
+-// main.cpp  (Milestone 8 — Combat Foundation)
++// main.cpp  (Milestone 9 — Equipment & Character Progression)
+ //
+-// New over Milestone 7:
+-//   - Player HP (PlayerState.hp/maxHp, 100/100 start). Displayed on the
+-//     bottom-screen HUD as simple "HP: 100/100" text.
+-//   - Forest Wolf (EnemyManager, see source/combat/) — one enemy, an
+-//     Idle/Chase/Attack/Return state machine, contact damage on the
+-//     player, melee combat from the player (X), guaranteed Wolf Pelt
+-//     loot on death.
+-//   - Consumables: L uses a Healing Herb (+20 HP), R uses a Simple
+-//     Potion (+50 HP). Dedicated keys, no menu screen — the simplest
+-//     implementation that satisfies "no inventory menus if avoidable."
+-//   - Death/respawn: HP reaching 0 teleports the player to the Town
+-//     spawn point at full HP, costs a small flat amount of gold, and
+-//     respawns all enemies. No death screen.
++// New over Milestone 8:
++//   - Selling: Mira now buys items too. The shop's single stock list
++//     (ShopUI, unchanged shape) grew to include sellable-but-not-
++//     buyable items (Wolf Pelt); A buys the item under the cursor, X
++//     sells one of it from the inventory. 50% of buy price, no new
++//     shop state.
++//   - Equipment: two slots (weapon, armor) on PlayerState. Three new
++//     items (Wooden Sword, Leather Armor, Iron Sword), all purchasable.
++//     START opens a minimal text-only inventory screen (cursor + A to
++//     equip/unequip + B to exit) — this replaces the Milestone 8
++//     in-gameplay "press START to reload" feature, since every other
++//     button is now claimed; Continue from the title screen remains
++//     the only load path.
++//   - Combat formula now includes equipment: player damage = base
++//     attack + weapon bonus; enemy contact damage = enemy attack -
++//     armor bonus (minimum 1).
++//   - HUD gained an Attack/Defense line (text only, no new panel).
++//   - The Missing Package quest now rewards a Wooden Sword instead of
++//     Mira's Token, proving the quest -> equipment path.
+ //
+ // Button map (gameplay):
+ //   D-Pad / Circle Pad : move
+-//   A                  : interact (NPC, world object, gather node) / buy (in shop)
+-//   B                  : close dialogue / leave shop
+-//   X                  : melee attack
++//   A                  : interact (NPC, world object, gather node) / buy (shop) / equip-unequip (inventory)
++//   B                  : close dialogue / leave shop / exit inventory
++//   X                  : melee attack / sell (in shop)
+ //   L                  : use Healing Herb (+20 HP)
+ //   R                  : use Simple Potion (+50 HP)
+ //   Y                  : open shop (only while talking to Mira)
++//   START              : open inventory/equip screen
+ //   SELECT             : save
+-//   START              : load
+ //   HOME               : quit (handled by aptMainLoop)
+ //
+ // Button map (title screen):
+@@ -48,6 +54,7 @@
+ #include "world/GatherNodeManager.h"
+ #include "world/Shop.h"
+ #include "combat/EnemyManager.h"
++#include "quest/InventoryScreen.h"
+ #include "render/Camera.h"
+ #include "render/Renderer.h"
+ #include "entities/Player.h"
+@@ -91,6 +98,7 @@ int main() {
+     GatherNodeManager  gatherNodes;
+     EnemyManager       enemies;
+     ShopUI             shop;
++    InventoryScreen    invScreen;
+     Player             player(0.0f, 0.0f);
+     Camera              camera;
+ 
+@@ -118,6 +126,17 @@ int main() {
+     float       combatMessageTimer = 0.0f;
+     static constexpr float COMBAT_MESSAGE_DURATION = 2.0f;
+ 
++    // Inventory screen feedback message (equip/unequip results,
++    // Milestone 9) — same message+timer pattern, shown as a top-screen
++    // banner via drawStatusMessage rather than inside the inventory
++    // panel itself, since equip/unequip is a quick confirm-and-continue
++    // action, not something that needs its own dedicated message slot
++    // inside the list (unlike the shop, where the message sits next to
++    // the transaction that caused it).
++    const char* invMessage      = nullptr;
++    float       invMessageTimer = 0.0f;
++    static constexpr float INV_MESSAGE_DURATION = 2.0f;
++
+     //--------------------------------------------------------------------------
+     // startGame — runs once, when the player picks New Game or Continue on
+     // the title screen. Everything in here used to run unconditionally
+@@ -218,7 +237,18 @@ int main() {
+         bool startPressed  = input.isPressed(KEY_START);
+ 
+         //----------------------------------------------------------------------
+-        // Save / Load (SELECT / START)
++        // Save (SELECT). START opens the inventory screen — see below,
++        // after shop/dialogue state is known, since opening it is itself
++        // a state change that should be checked alongside those.
++        //
++        // Milestone 8 had an in-gameplay "press START to reload your
++        // last save without quitting" feature here. It's removed in
++        // Milestone 9: every other button is now claimed (X=attack,
++        // L/R=consumables, Y=shop-trigger, A=interact/buy, B=close/
++        // leave), and START is the assignment's explicit choice for
++        // opening the inventory screen. Continue from the title screen
++        // remains the only load path — a deliberate scope decision, not
++        // an oversight (see the Milestone 9 design doc's risk section).
+         //----------------------------------------------------------------------
+         if (selectPressed) {
+             bool ok = SaveManager::saveGame(
+@@ -229,36 +259,12 @@ int main() {
+             LOG("Save triggered: %s", statusMessage);
+         }
+ 
+-        if (startPressed) {
+-            if (SaveManager::hasSave()) {
+-                bool ok = SaveManager::loadGame(
+-                    player, zones, worldClock,
+-                    playerState, questMgr, worldObjects,
+-                    zones.getTileMap());
+-                if (ok) {
+-                    // SaveManager::apply() already applied world object
+-                    // overrides for the loaded zone.
+-                    npcs.init(worldClock.getTotalMinutes());
+-                    camera.update(player.getCenterX(), player.getCenterY(),
+-                                  zones.getTileMap().getWidthPixels(),
+-                                  zones.getTileMap().getHeightPixels());
+-                    statusMessage = "Game Loaded.";
+-                } else {
+-                    statusMessage = "Load Failed!";
+-                }
+-                statusTimer = STATUS_DURATION;
+-                LOG("Load triggered: %s", statusMessage);
+-            } else {
+-                statusMessage = "No Save Found.";
+-                statusTimer   = STATUS_DURATION;
+-            }
+-        }
+-
+         //----------------------------------------------------------------------
+         // Update
+         //----------------------------------------------------------------------
+         statusTimer      = statusTimer > 0.0f ? statusTimer - dt : 0.0f;
+         shopMessageTimer = shopMessageTimer > 0.0f ? shopMessageTimer - dt : 0.0f;
++        invMessageTimer  = invMessageTimer > 0.0f ? invMessageTimer - dt : 0.0f;
+ 
+         worldClock.update(dt);
+         dayNight.update(worldClock.getTimeAsFloat());
+@@ -302,7 +308,43 @@ int main() {
+                     case ShopResult::INVENTORY_FULL:
+                         shopMessage = "Inventory full.";
+                         break;
++                    case ShopResult::NOT_BUYABLE:
++                        shopMessage = "Not for sale.";
++                        break;
+                     case ShopResult::NONE:
++                    case ShopResult::SOLD:
++                    case ShopResult::NOT_SELLABLE:
++                    case ShopResult::NOTHING_TO_SELL:
++                    default:
++                        shopMessage = nullptr;
++                        break;
++                }
++                shopMessageTimer = SHOP_MESSAGE_DURATION;
++            }
++
++            // Sell (Milestone 9, Feature 1). X is the player's attack
++            // button during normal gameplay, but attack input is
++            // already gated off while the shop is open (see
++            // `interactionSuspended` below), so there's no conflict
++            // reusing it here for sell, exactly as the assignment
++            // prefers ("A = Buy, X = Sell while inside the shop").
++            if (xPressed) {
++                ShopResult result = shop.trySell(playerState);
++                switch (result) {
++                    case ShopResult::SOLD:
++                        shopMessage = "Sold!";
++                        break;
++                    case ShopResult::NOTHING_TO_SELL:
++                        shopMessage = "You don't have one.";
++                        break;
++                    case ShopResult::NOT_SELLABLE:
++                        shopMessage = "Mira won't buy that.";
++                        break;
++                    case ShopResult::NONE:
++                    case ShopResult::PURCHASED:
++                    case ShopResult::NOT_ENOUGH_GOLD:
++                    case ShopResult::INVENTORY_FULL:
++                    case ShopResult::NOT_BUYABLE:
+                     default:
+                         shopMessage = nullptr;
+                         break;
+@@ -316,21 +358,60 @@ int main() {
+             }
+         }
+ 
++        // Open the inventory/equip screen: START, from normal gameplay
++        // (Milestone 9, Feature 4). Suspended while talking, shopping,
++        // or already in the inventory screen — the same "one panel at a
++        // time" rule the shop already follows relative to dialogue.
++        if (startPressed && !invScreen.isOpen() && !shop.isOpen() && !npcs.isDialogueOpen()) {
++            invScreen.open();
++            invMessage      = nullptr;
++            invMessageTimer = 0.0f;
++            LOG("Inventory screen opened");
++        }
++
++        if (invScreen.isOpen()) {
++            if (input.isPressed(KEY_DOWN)) invScreen.moveCursor(+1);
++            if (input.isPressed(KEY_UP))   invScreen.moveCursor(-1);
++
++            if (aPressed) {
++                InventoryAction result = invScreen.tryActivate(playerState);
++                switch (result) {
++                    case InventoryAction::EQUIPPED:
++                        invMessage = "Equipped.";
++                        break;
++                    case InventoryAction::UNEQUIPPED:
++                        invMessage = "Unequipped.";
++                        break;
++                    case InventoryAction::NONE:
++                    default:
++                        invMessage = nullptr;
++                        break;
++                }
++                invMessageTimer = INV_MESSAGE_DURATION;
++            }
++
++            if (bPressed) {
++                invScreen.close();
++                LOG("Inventory screen closed");
++            }
++        }
++
+         if (bPressed && npcs.isDialogueOpen()) {
+             npcs.closeDialogue();
+         }
+ 
+         bool canMove = (zones.getFadeAlpha() < 1.0f) && !npcs.isDialogueOpen()
+-                      && !shop.isOpen();
++                      && !shop.isOpen() && !invScreen.isOpen();
+         if (canMove) {
+             Vec2 axis = input.getMovementAxis();
+             player.update(axis, dt, zones.getTileMap());
+         }
+ 
+         // A-button priority: dialogue close → world object → gather node → NPC
+-        // Skipped entirely while the shop is open — its A press was
+-        // already consumed by shop.tryBuy() above.
+-        bool aConsumed = shop.isOpen();
++        // Skipped entirely while the shop or inventory screen is open —
++        // their A press was already consumed by shop.tryBuy() or
++        // invScreen.tryActivate() above.
++        bool aConsumed = shop.isOpen() || invScreen.isOpen();
+ 
+         if (!aConsumed && npcs.isDialogueOpen() && aPressed) {
+             npcs.tryInteract(player.getCenterX(), player.getCenterY(),
+@@ -363,7 +444,7 @@ int main() {
+         //----------------------------------------------------------------------
+         combatMessageTimer = combatMessageTimer > 0.0f ? combatMessageTimer - dt : 0.0f;
+ 
+-        bool interactionSuspended = npcs.isDialogueOpen() || shop.isOpen();
++        bool interactionSuspended = npcs.isDialogueOpen() || shop.isOpen() || invScreen.isOpen();
+ 
+         // Enemy AI/contact-damage always ticks — an enemy mid-bite
+         // shouldn't freeze just because a menu opened elsewhere. This is
+@@ -498,12 +579,17 @@ int main() {
+                                   zones.getNameAlpha());
+         }
+ 
+-        // Save/load status message, or combat feedback if more recent —
+-        // reuses the existing message/timer banner rather than adding a
+-        // second on-screen text system, per the Milestone 8 assignment's
+-        // explicit instruction to reuse the project's message/timer
+-        // pattern instead of building new UI.
+-        if (combatMessageTimer > 0.0f && combatMessage != nullptr) {
++        // Save/load status message, combat feedback, or inventory
++        // equip/unequip feedback if more recent — reuses the existing
++        // message/timer banner rather than adding a second on-screen
++        // text system, per the Milestone 8 assignment's explicit
++        // instruction to reuse the project's message/timer pattern
++        // instead of building new UI (Milestone 9 follows the same rule
++        // for the new inventory screen's feedback).
++        if (invMessageTimer > 0.0f && invMessage != nullptr) {
++            float alpha = (invMessageTimer < 0.5f) ? invMessageTimer / 0.5f : 1.0f;
++            renderer.drawStatusMessage(invMessage, alpha);
++        } else if (combatMessageTimer > 0.0f && combatMessage != nullptr) {
+             float alpha = (combatMessageTimer < 0.5f) ? combatMessageTimer / 0.5f : 1.0f;
+             renderer.drawStatusMessage(combatMessage, alpha);
+         } else if (statusTimer > 0.0f && statusMessage != nullptr) {
+@@ -511,8 +597,10 @@ int main() {
+             renderer.drawStatusMessage(statusMessage, alpha);
+         }
+ 
+-        // Bottom screen: shop → dialogue → quest HUD
+-        if (shop.isOpen()) {
++        // Bottom screen: inventory screen → shop → dialogue → quest HUD
++        if (invScreen.isOpen()) {
++            renderer.drawInventoryScreen(invScreen.getCursor(), playerState);
++        } else if (shop.isOpen()) {
+             renderer.drawShop(shop.getCursor(), playerState.gold,
+                               shopMessage, shopMessageTimer);
+         } else if (npcs.isDialogueOpen()) {
+@@ -527,7 +615,8 @@ int main() {
+                 displayText = enemies.getLastMessage();
+             }
+             renderer.drawQuestHUD(displayText, playerState.hp, playerState.maxHp,
+-                                  playerState.gold, playerState.wood, playerState.rope);
++                                  playerState.gold, playerState.wood, playerState.rope,
++                                  playerState.getAttack(), playerState.getDefense());
+         }
+ 
+         renderer.endFrame();
+diff --git a/source/quest/PlayerState.h b/source/quest/PlayerState.h
+index 0c14ea5..f8adb5c 100644
+--- a/source/quest/PlayerState.h
++++ b/source/quest/PlayerState.h
+@@ -1,7 +1,7 @@
+ #pragma once
+ 
+ //-----------------------------------------------------------------------------
+-// PlayerState.h  (Milestone 8 — Combat Foundation: adds HP)
++// PlayerState.h  (Milestone 9 — Equipment & Character Progression)
+ //
+ // Additions:
+ //   wood  — used to repair bridges and clear fallen trees
+@@ -16,6 +16,16 @@
+ //               leveling system to raise maxHp past 255 without another
+ //               field-width change. Two extra bytes is not worth
+ //               optimizing away for that headroom.
++//   equippedWeapon / equippedArmor — Milestone 9. u8 ItemID of the
++//               currently-equipped item in each slot, or NO_EQUIPMENT
++//               (0xFF) if the slot is empty. 0xFF rather than 0 because
++//               0 is a valid real ItemID (Healing Herb) — using 0 as
++//               "empty" would be ambiguous the moment a real item with
++//               ID 0 could ever be equipped. There are only two slots
++//               (weapon, armor) per the assignment's explicit scope —
++//               no array, no slot-index abstraction, just two named
++//               fields, since "two of them, forever" doesn't benefit
++//               from being generalized into a loop over N slots.
+ //
+ // PlayerState is a plain struct: no custom constructor. New-game starting
+ // values are set explicitly via init() rather than baked into a constructor,
+@@ -27,19 +37,39 @@
+ // nodes in Forest, so a fresh game requires gathering before repairing the
+ // bridge (5 wood), ladder (3 rope), or fallen tree (8 wood).
+ //
+-// Starting HP is 100/100 per the Milestone 8 assignment.
++// Starting HP is 100/100 per the Milestone 8 assignment. Starting
++// equipment is empty (both slots NO_EQUIPMENT) — the player earns their
++// first weapon via the Missing Package quest reward (Milestone 9,
++// Feature 8), not by starting with one.
+ //
+ // Save-friendly: struct embeds into SaveData verbatim. All fields are
+ // plain integer types or the POD Inventory struct. No pointers. No
+ // dynamic allocation.
+ //
+-// Memory: 28 bytes (24 bytes from Milestone 7 + 4 bytes for hp/maxHp).
++// Memory: 32 bytes (28 bytes from Milestone 8 + 2 bytes for the two
++// equipment slot fields + 2 bytes trailing padding to keep the struct's
++// total size a multiple of 4, required since PlayerState starts with a
++// u32 and is embedded by value in other structs — verified via
++// offsetof/sizeof, not assumed: equippedArmor lands at offset 29, and
++// the struct rounds up to 32).
+ //-----------------------------------------------------------------------------
+ 
+ #include "../../include/types.h"
+ #include "Inventory.h"
+ #include "../items/ItemDef.h"
+ 
++// Sentinel for "no item equipped in this slot" — see header comment for
++// why 0xFF rather than 0.
++static constexpr u8 NO_EQUIPMENT = 0xFF;
++
++// Base stats before equipment bonuses. Named here (not buried as a
++// magic number in EnemyManager.cpp) since both the combat formula and
++// the stats-panel HUD need the same starting point.
++static constexpr u16 PLAYER_BASE_ATTACK  = 15;  // matches Milestone 8's
++                                                  // flat PLAYER_ATTACK_DAMAGE
++static constexpr u16 PLAYER_BASE_DEFENSE = 0;   // no innate defense —
++                                                  // armor is the only source
++
+ struct PlayerState {
+     u32       gold;
+     u8        wood;
+@@ -48,6 +78,8 @@ struct PlayerState {
+     Inventory inventory;
+     u16       hp;
+     u16       maxHp;
++    u8        equippedWeapon;  // ItemID, or NO_EQUIPMENT
++    u8        equippedArmor;   // ItemID, or NO_EQUIPMENT
+ 
+     // Set new-game starting values. Call once when starting a fresh game
+     // (not on load — SaveManager::apply() overwrites these fields directly
+@@ -61,6 +93,8 @@ struct PlayerState {
+         inventory.init();
+         maxHp  = 100;
+         hp     = maxHp;
++        equippedWeapon = NO_EQUIPMENT;
++        equippedArmor  = NO_EQUIPMENT;
+     }
+ 
+     void addGold(u32 amount)  { gold += amount; }
+@@ -112,4 +146,70 @@ struct PlayerState {
+         heal(def.heal_amount);
+         return true;
+     }
++
++    // Total attack: base + equipped weapon's bonus (0 if no weapon
++    // equipped). Used by EnemyManager::tryAttack() for the combat
++    // formula and by the Milestone 9 stats-panel HUD.
++    u16 getAttack() const {
++        u16 bonus = (equippedWeapon != NO_EQUIPMENT)
++                   ? getItemDef(equippedWeapon).attack_bonus : 0;
++        return PLAYER_BASE_ATTACK + bonus;
++    }
++
++    // Total defense: base + equipped armor's bonus (0 if no armor
++    // equipped). Subtracted from incoming enemy damage in
++    // EnemyManager::update()'s contact-damage formula.
++    u16 getDefense() const {
++        u16 bonus = (equippedArmor != NO_EQUIPMENT)
++                   ? getItemDef(equippedArmor).defense_bonus : 0;
++        return PLAYER_BASE_DEFENSE + bonus;
++    }
++
++    // Equip an item from the inventory into its ItemDef::equip_slot.
++    // If something is already equipped in that slot, it's returned to
++    // the inventory first (swap, not stack — the assignment's "old item
++    // returns to inventory" requirement). Returns false (no change) if
++    // the item isn't equipment, isn't held, or the swap-back would fail
++    // because the inventory has no room for the previously-equipped item.
++    bool equipItem(u8 item_id) {
++        const ItemDef& def = getItemDef(item_id);
++        if (def.equip_slot == EquipSlot::NONE) return false; // not equipment
++        if (inventory.getQuantity(item_id) == 0) return false; // don't have it
++
++        u8& slot = (def.equip_slot == EquipSlot::WEAPON) ? equippedWeapon : equippedArmor;
++
++        if (slot == item_id) return false; // already equipped — use
++                                            // unequipItem() for that, not this
++
++        // Pull the new item out of the inventory before doing anything
++        // else, so a failure below leaves nothing half-applied.
++        if (!inventory.removeItem(item_id, 1)) return false;
++
++        if (slot != NO_EQUIPMENT) {
++            // Return the previously-equipped item to the inventory. If
++            // this fails (inventory completely full of unrelated items),
++            // undo the removeItem above and refuse the whole operation —
++            // equipping should never destroy the old item as a side effect.
++            if (!inventory.addItem(slot, 1)) {
++                inventory.addItem(item_id, 1); // put the new item back
++                return false;
++            }
++        }
++
++        slot = item_id;
++        return true;
++    }
++
++    // Unequip whatever is in `slot_type`, returning it to the inventory.
++    // Returns false (no change) if that slot is already empty, or if
++    // the inventory has no room for the returned item.
++    bool unequipItem(EquipSlot slot_type) {
++        u8& slot = (slot_type == EquipSlot::WEAPON) ? equippedWeapon : equippedArmor;
++        if (slot_type == EquipSlot::NONE)  return false;
++        if (slot == NO_EQUIPMENT)          return false;
++
++        if (!inventory.addItem(slot, 1)) return false; // no room — refuse
++        slot = NO_EQUIPMENT;
++        return true;
++    }
+ };
+diff --git a/source/quest/QuestDef.h b/source/quest/QuestDef.h
+index ddef6e3..4b33920 100644
+--- a/source/quest/QuestDef.h
++++ b/source/quest/QuestDef.h
+@@ -23,9 +23,13 @@
+ //   Step 0: TALK_TO_NPC   (Mira, npc_id=1) — accept quest
+ //   Step 1: REACH_MARKER  (Forest marker at tile 13,11)
+ //   Step 2: RETURN_TO_NPC (Mira, npc_id=1) — hand in
+-//   Reward: 50 gold + 1x Mira's Token (proves the item-reward path
+-//   end to end with a non-purchasable item, not just a gold-equivalent
+-//   consumable).
++//   Reward: 50 gold + 1x Wooden Sword (Milestone 9 — changed from
++//   Mira's Token to prove the quest -> equipment path specifically;
++//   see the Milestone 9 design doc's Feature 8). Mira's Token remains
++//   defined in ItemDef.h (not deleted) but is no longer granted by any
++//   quest — it's not removed from the registry just because nothing
++//   currently hands it out, the same way MAX_ENEMIES has unused slots
++//   reserved for future growth.
+ //
+ // Memory: all data is static const in ROM — 0 bytes RAM.
+ //-----------------------------------------------------------------------------
+@@ -166,7 +170,7 @@ static const QuestDef s_questDefs[] = {
+         "The Missing Package",
+         s_missingPackageSteps,
+         3,
+-        { /*gold=*/ 50, /*item_id=*/ static_cast<u8>(ItemID::MIRAS_TOKEN), /*item_qty=*/ 1 }
++        { /*gold=*/ 50, /*item_id=*/ static_cast<u8>(ItemID::WOODEN_SWORD), /*item_qty=*/ 1 }
+     },
+ };
+ 
+diff --git a/source/render/Renderer.cpp b/source/render/Renderer.cpp
+index 7224f10..821e8e5 100644
+--- a/source/render/Renderer.cpp
++++ b/source/render/Renderer.cpp
+@@ -520,7 +520,7 @@ void Renderer::drawShop(int cursor, u32 gold, const char* lastMessage, float mes
+     C2D_TextParse(&header, m_textBuf, "Mira's Wares");
+     C2D_TextOptimize(&header);
+     C2D_DrawText(&header, C2D_WithColor | C2D_AtBaseline,
+-                 10.0f, 16.0f, 0.7f, 0.6f, 0.6f,
++                 10.0f, 14.0f, 0.7f, 0.55f, 0.55f,
+                  C2D_Color32(255, 220, 80, 255));
+ 
+     // Gold, right-aligned-ish
+@@ -530,12 +530,18 @@ void Renderer::drawShop(int cursor, u32 gold, const char* lastMessage, float mes
+     C2D_TextParse(&goldText, m_textBuf, goldBuf);
+     C2D_TextOptimize(&goldText);
+     C2D_DrawText(&goldText, C2D_WithColor | C2D_AtBaseline,
+-                 230.0f, 16.0f, 0.7f, 0.5f, 0.5f,
++                 230.0f, 14.0f, 0.7f, 0.45f, 0.45f,
+                  C2D_Color32(220, 200, 120, 255));
+ 
+-    // Stock rows
+-    constexpr float FIRST_ROW_Y = 36.0f;
+-    constexpr float ROW_HEIGHT  = 20.0f;
++    // Stock rows — Milestone 9: MAX_SHOP_ITEMS grew from 7 to 11 when
++    // selling was added (Wolf Pelt, Wooden Sword, Leather Armor, Iron
++    // Sword joined the one combined buy/sell list — see Shop.h). 20px
++    // row spacing no longer fits 11 rows above the footer hint on a
++    // 240px-tall screen (11 * 20 = 220, overlapping the footer at
++    // SCREEN_BOT_H-8); tightened to 16px, which fits with room to spare
++    // (11 * 16 = 176) and is still comfortably readable at this font scale.
++    constexpr float FIRST_ROW_Y = 32.0f;
++    constexpr float ROW_HEIGHT  = 16.0f;
+ 
+     for (int i = 0; i < MAX_SHOP_ITEMS; i++) {
+         const ItemDef& def = getItemDef(s_shopStock[i]);
+@@ -547,7 +553,7 @@ void Renderer::drawShop(int cursor, u32 gold, const char* lastMessage, float mes
+             : C2D_Color32(200, 200, 200, 255);
+ 
+         if (isSelected) {
+-            drawColorRect(4.0f, rowY - 12.0f,
++            drawColorRect(4.0f, rowY - 10.0f,
+                           static_cast<float>(SCREEN_BOT_W) - 8.0f, ROW_HEIGHT - 2.0f,
+                           C2D_Color32(60, 60, 90, 160));
+         }
+@@ -558,31 +564,39 @@ void Renderer::drawShop(int cursor, u32 gold, const char* lastMessage, float mes
+         C2D_TextParse(&rowText, m_textBuf, rowBuf);
+         C2D_TextOptimize(&rowText);
+         C2D_DrawText(&rowText, C2D_WithColor | C2D_AtBaseline,
+-                     14.0f, rowY, 0.6f, 0.5f, 0.5f, color);
+-
+-        char priceBuf[16];
+-        snprintf(priceBuf, sizeof(priceBuf), "%ug", def.base_price);
++                     14.0f, rowY, 0.6f, 0.42f, 0.42f, color);
++
++        // Buy price (blank if not buyable, e.g. Wolf Pelt) and sell
++        // price (blank if not sellable — currently always shown, since
++        // the only non-sellable item, Mira's Token, isn't in this list).
++        char priceBuf[24];
++        if (def.buyable) {
++            snprintf(priceBuf, sizeof(priceBuf), "Buy:%u Sell:%u",
++                     def.base_price, getSellPrice(def));
++        } else {
++            snprintf(priceBuf, sizeof(priceBuf), "Sell:%u", getSellPrice(def));
++        }
+         C2D_Text priceText;
+         C2D_TextParse(&priceText, m_textBuf, priceBuf);
+         C2D_TextOptimize(&priceText);
+         C2D_DrawText(&priceText, C2D_WithColor | C2D_AtBaseline,
+-                     250.0f, rowY, 0.6f, 0.5f, 0.5f, color);
++                     200.0f, rowY, 0.6f, 0.4f, 0.4f, color);
+     }
+ 
+-    // Inline feedback message (purchase result), or the control hint.
++    // Inline feedback message (transaction result), or the control hint.
+     if (lastMessage != nullptr && messageTimer > 0.0f) {
+         C2D_Text msgText;
+         C2D_TextParse(&msgText, m_textBuf, lastMessage);
+         C2D_TextOptimize(&msgText);
+         C2D_DrawText(&msgText, C2D_WithColor | C2D_AtBaseline,
+-                     10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.5f, 0.5f,
++                     10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.45f, 0.45f,
+                      C2D_Color32(255, 200, 120, 255));
+     } else {
+         C2D_Text hint;
+-        C2D_TextParse(&hint, m_textBuf, "Up/Down: Select   A: Buy   B: Leave");
++        C2D_TextParse(&hint, m_textBuf, "Up/Down: Select   A: Buy   X: Sell   B: Leave");
+         C2D_TextOptimize(&hint);
+         C2D_DrawText(&hint, C2D_WithColor | C2D_AtBaseline,
+-                     10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.42f, 0.42f,
++                     10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.38f, 0.38f,
+                      C2D_Color32(140, 140, 140, 255));
+     }
+ 
+@@ -789,7 +803,7 @@ void Renderer::drawTitleScreenBottom() {
+ 
+ //-----------------------------------------------------------------------------
+ void Renderer::drawQuestHUD(const char* objectiveText, u16 hp, u16 maxHp,
+-                            u32 gold, u8 wood, u8 rope) {
++                            u32 gold, u8 wood, u8 rope, u16 attack, u16 defense) {
+     C2D_SceneBegin(m_botTarget);
+     C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
+ 
+@@ -851,6 +865,104 @@ void Renderer::drawQuestHUD(const char* objectiveText, u16 hp, u16 maxHp,
+                  10.0f, 70.0f, 0.7f, 0.55f, 0.55f,
+                  C2D_Color32(220, 200, 120, 255));
+ 
++    // Character stats row (Milestone 9, Feature 6): Attack / Defense.
++    // Text only, no graphical bars, reusing this same HUD surface rather
++    // than a new panel — per the assignment's explicit instruction.
++    char statsBuf[48];
++    snprintf(statsBuf, sizeof(statsBuf), "Attack:%u  Defense:%u", attack, defense);
++    C2D_Text statsText;
++    C2D_TextParse(&statsText, m_textBuf, statsBuf);
++    C2D_TextOptimize(&statsText);
++    C2D_DrawText(&statsText, C2D_WithColor | C2D_AtBaseline,
++                 10.0f, 90.0f, 0.7f, 0.55f, 0.55f,
++                 C2D_Color32(180, 200, 230, 255));
++
++    // Footer hint for the new inventory screen, so the control is
++    // discoverable without needing to read documentation.
++    C2D_Text hint;
++    C2D_TextParse(&hint, m_textBuf, "START: Inventory");
++    C2D_TextOptimize(&hint);
++    C2D_DrawText(&hint, C2D_WithColor | C2D_AtBaseline,
++                 10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.4f, 0.4f,
++                 C2D_Color32(130, 130, 130, 255));
++
++    m_dialogueDrawnThisFrame = true;
++    C2D_SceneBegin(m_topTarget);
++}
++
++//-----------------------------------------------------------------------------
++// drawInventoryScreen  (Milestone 9 — Equipment & Character Progression)
++//
++// The equip/unequip UI: the player's 8 inventory slots as a text list.
++// Empty slots are shown as "-- empty --" rather than hidden, so slot
++// positions stay stable while navigating (see InventoryScreen.h's header
++// comment for why). Equipped items get an "[E]" marker so it's clear at
++// a glance which row, if any, is currently worn — without a second
++// screen or icon set.
++//-----------------------------------------------------------------------------
++void Renderer::drawInventoryScreen(int cursor, const PlayerState& playerState) {
++    C2D_SceneBegin(m_botTarget);
++    C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
++
++    drawColorRect(0.0f, 0.0f,
++                  static_cast<float>(SCREEN_BOT_W), static_cast<float>(SCREEN_BOT_H),
++                  C2D_Color32(15, 15, 25, 230));
++
++    C2D_Text header;
++    C2D_TextParse(&header, m_textBuf, "Inventory");
++    C2D_TextOptimize(&header);
++    C2D_DrawText(&header, C2D_WithColor | C2D_AtBaseline,
++                 10.0f, 14.0f, 0.7f, 0.55f, 0.55f,
++                 C2D_Color32(220, 220, 255, 255));
++
++    constexpr float FIRST_ROW_Y = 34.0f;
++    constexpr float ROW_HEIGHT  = 20.0f; // only 8 rows, so the wider Milestone
++                                          // 7/8 spacing still fits comfortably
++
++    for (int i = 0; i < INVENTORY_SLOTS; i++) {
++        const InventorySlot& slot = playerState.inventory.slots[i];
++        bool isSelected = (i == cursor);
++        float rowY = FIRST_ROW_Y + i * ROW_HEIGHT;
++
++        u32 color = isSelected
++            ? C2D_Color32(255, 240, 180, 255)
++            : C2D_Color32(200, 200, 200, 255);
++
++        if (isSelected) {
++            drawColorRect(4.0f, rowY - 12.0f,
++                          static_cast<float>(SCREEN_BOT_W) - 8.0f, ROW_HEIGHT - 2.0f,
++                          C2D_Color32(60, 60, 90, 160));
++        }
++
++        char rowBuf[40];
++        if (slot.quantity == 0) {
++            snprintf(rowBuf, sizeof(rowBuf), "-- empty --");
++        } else {
++            const ItemDef& def = getItemDef(slot.item_id);
++            bool isEquipped =
++                (def.equip_slot == EquipSlot::WEAPON && playerState.equippedWeapon == slot.item_id) ||
++                (def.equip_slot == EquipSlot::ARMOR  && playerState.equippedArmor  == slot.item_id);
++            if (isEquipped) {
++                snprintf(rowBuf, sizeof(rowBuf), "%s x%u [E]", def.name, slot.quantity);
++            } else {
++                snprintf(rowBuf, sizeof(rowBuf), "%s x%u", def.name, slot.quantity);
++            }
++        }
++
++        C2D_Text rowText;
++        C2D_TextParse(&rowText, m_textBuf, rowBuf);
++        C2D_TextOptimize(&rowText);
++        C2D_DrawText(&rowText, C2D_WithColor | C2D_AtBaseline,
++                     14.0f, rowY, 0.6f, 0.5f, 0.5f, color);
++    }
++
++    C2D_Text hint;
++    C2D_TextParse(&hint, m_textBuf, "Up/Down: Select   A: Equip/Unequip   B: Exit");
++    C2D_TextOptimize(&hint);
++    C2D_DrawText(&hint, C2D_WithColor | C2D_AtBaseline,
++                 10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.4f, 0.4f,
++                 C2D_Color32(140, 140, 140, 255));
++
+     m_dialogueDrawnThisFrame = true;
+     C2D_SceneBegin(m_topTarget);
+ }
+diff --git a/source/render/Renderer.h b/source/render/Renderer.h
+index 8418212..3adbc4b 100644
+--- a/source/render/Renderer.h
++++ b/source/render/Renderer.h
+@@ -27,6 +27,7 @@
+ #include "../world/GatherNode.h"
+ #include "../combat/Enemy.h"
+ #include "../world/Shop.h"
++#include "../quest/PlayerState.h"
+ #include "../npc/NPC.h"
+ #include "../npc/NPCManager.h"
+ #include "../entities/AnimState.h"
+@@ -101,10 +102,10 @@ public:
+     void drawEnemies(const Enemy* enemies, int count,
+                      ZoneID currentZone, const Camera& cam);
+ 
+-    // Draw quest objective text, HP, gold, and resources on bottom screen.
+-    // objectiveText: nullptr = show "No active quest".
++    // Draw quest objective text, HP, gold, resources, and attack/defense
++    // on bottom screen. objectiveText: nullptr = show "No active quest".
+     void drawQuestHUD(const char* objectiveText, u16 hp, u16 maxHp,
+-                      u32 gold, u8 wood, u8 rope);
++                      u32 gold, u8 wood, u8 rope, u16 attack, u16 defense);
+ 
+     // Draw a centered status message on the top screen (e.g. "Game Saved").
+     // alpha [0,1] for fade in/out. Call after world geometry, before endFrame.
+@@ -129,6 +130,12 @@ public:
+     // has nothing to do with gameplay yet.
+     void drawTitleScreenBottom();
+ 
++    // Draw the equip/unequip inventory screen (Milestone 9): the
++    // player's 8 inventory slots as a text list, cursor highlight,
++    // equipped items marked with "[E]". Mirrors drawShop's structure —
++    // same header-bar/row-list/footer-hint layout.
++    void drawInventoryScreen(int cursor, const PlayerState& playerState);
++
+     void endFrame();
+ 
+     bool isReady() const { return m_ready; }
+diff --git a/source/save/SaveData.h b/source/save/SaveData.h
+index 0bbbf4b..41c6dd3 100644
+--- a/source/save/SaveData.h
++++ b/source/save/SaveData.h
+@@ -40,6 +40,17 @@
+ //   game). Pre-Milestone-8 saves (version 6 and earlier) will be
+ //   rejected and the player will start a fresh game.
+ //
++//   Milestone 9 bumps SAVE_VERSION 7 -> 8: adds equipped_weapon/
++//   equipped_armor (2 bytes — u8 ItemID each, or NO_EQUIPMENT/0xFF for
++//   an empty slot; see PlayerState.h). To keep sizeof(SaveData)
++//   unchanged, reserved_titles shrinks from 8 to 6 bytes — the
++//   "unlocked title bitfield" concept is just as unrelated to equipment
++//   as Milestone 8's HP fields were to skills, so this follows the same
++//   "take from the least-related reserved block" reasoning rather than
++//   touching reserved_skills again. Pre-Milestone-9 saves (version 7
++//   and earlier) will be rejected and the player will start a fresh
++//   game, per the same no-migration policy as every prior bump.
++//
+ // FUTURE EXTENSION:
+ //   Each remaining "reserved" block is named for its intended future
+ //   system. inventory_pad[48] is reserved specifically for inventory
+@@ -61,7 +72,7 @@
+ #include "../quest/QuestManager.h"
+ #include <cstddef>  // offsetof
+ 
+-static constexpr u16 SAVE_VERSION   = 7;     // bump on every layout change
++static constexpr u16 SAVE_VERSION   = 8;     // bump on every layout change
+ static constexpr u32 SAVE_MAGIC     = 0x4C4F4100;  // "LOA\0"
+ 
+ //-----------------------------------------------------------------------------
+@@ -150,6 +161,16 @@ struct SaveData {
+     InventorySlot inventory[INVENTORY_SLOTS];   // 8 * 2 bytes = 16 bytes
+     u8            inventory_pad[48];            // reserved for future inventory growth
+ 
++    //-------------------------------------------------------------------------
++    // Equipment (2 bytes) — Milestone 9
++    // u8 ItemID each, or NO_EQUIPMENT (0xFF) for an empty slot — see
++    // PlayerState.h. Only two slots exist (weapon, armor) per the
++    // Milestone 9 assignment's explicit scope, so these are two named
++    // fields, not an array.
++    //-------------------------------------------------------------------------
++    u8  equipped_weapon;
++    u8  equipped_armor;
++
+     //-------------------------------------------------------------------------
+     // Reserved blocks for future systems
+     // Replace with real structs when those milestones arrive.
+@@ -160,7 +181,10 @@ struct SaveData {
+                                     // was 32 bytes, see version-history
+                                     // comment above for why this block)
+     u8  reserved_reputation[16];   // Future: faction reputation
+-    u8  reserved_titles[8];        // Future: unlocked title bitfield
++    u8  reserved_titles[6];        // Future: unlocked title bitfield (2
++                                    // bytes donated to equipped_weapon/
++                                    // equipped_armor in Milestone 9 —
++                                    // was 8 bytes)
+     u8  reserved_crafting[16];     // Future: crafting unlock flags
+     u8  reserved_housing[16];      // Future: housing state
+ };
+diff --git a/source/save/SaveManager.cpp b/source/save/SaveManager.cpp
+index 06c7631..3368851 100644
+--- a/source/save/SaveManager.cpp
++++ b/source/save/SaveManager.cpp
+@@ -46,6 +46,10 @@ void SaveManager::gather(SaveData&                 out,
+         out.inventory[i] = playerState.inventory.slots[i];
+     }
+ 
++    // Equipment (Milestone 9)
++    out.equipped_weapon = playerState.equippedWeapon;
++    out.equipped_armor  = playerState.equippedArmor;
++
+     // Quest states
+     for (int i = 0; i < MAX_QUESTS; i++) {
+         out.quest_status[i]       = static_cast<u8>(questMgr.getStatus(static_cast<u8>(i)));
+@@ -105,15 +109,20 @@ void SaveManager::apply(const SaveData&      sd,
+         playerState.inventory.slots[i] = sd.inventory[i];
+     }
+ 
++    // 5c. Restore equipment (Milestone 9)
++    playerState.equippedWeapon = sd.equipped_weapon;
++    playerState.equippedArmor  = sd.equipped_armor;
++
+     // 6. Restore quest states
+     for (int i = 0; i < MAX_QUESTS; i++) {
+         QuestStatus status = static_cast<QuestStatus>(sd.quest_status[i]);
+         questMgr.setStateFromSave(static_cast<u8>(i), status, sd.quest_current_step[i]);
+     }
+ 
+-    LOG("SaveManager: loaded — zone=%d pos=(%.0f,%.0f) time=%d gold=%u wood=%u rope=%u hp=%u/%u",
++    LOG("SaveManager: loaded — zone=%d pos=(%.0f,%.0f) time=%d gold=%u wood=%u rope=%u hp=%u/%u weapon=%u armor=%u",
+         sd.zone_id, sd.player_x, sd.player_y, sd.total_minutes,
+-        sd.gold, sd.wood, sd.rope, sd.hp, sd.maxHp);
++        sd.gold, sd.wood, sd.rope, sd.hp, sd.maxHp,
++        sd.equipped_weapon, sd.equipped_armor);
+ }
+ 
+ //-----------------------------------------------------------------------------
+diff --git a/source/world/Shop.h b/source/world/Shop.h
+index 68244b7..d9b2c66 100644
+--- a/source/world/Shop.h
++++ b/source/world/Shop.h
+@@ -1,22 +1,30 @@
+ #pragma once
+ 
+ //-----------------------------------------------------------------------------
+-// Shop.h  (Milestone 7 — Economy Loop)
++// Shop.h  (Milestone 9 — Equipment & Character Progression: adds selling)
+ //
+-// One shopkeeper (Mira). Proves the transaction loop: view stock, buy
+-// item, deduct gold, add to inventory. No selling, no scrolling, no
+-// dynamic pricing, no shop schedules.
++// One shopkeeper (Mira). Proves the transaction loop both ways: view
++// stock, buy item (deduct gold, add to inventory), and now sell an item
++// (remove from inventory, grant gold at 50% of buy price). No scrolling,
++// no dynamic pricing, no shop schedules.
+ //
+ // Architecture:
+-//   s_shopStock[] is static data — which ItemIDs Mira sells. Since
+-//   there's exactly one shopkeeper, this is a single array, not a
+-//   per-NPC system; if a second shopkeeper is ever added, the natural
+-//   extension is a second static array plus a `Shop` selector on the
+-//   NPC, not a refactor of this one.
++//   s_shopStock[] is static data — the single list the shop's cursor
++//   walks. Per the Milestone 9 assignment's explicit instruction to
++//   reuse the existing ShopUI and not create a new shop state, this is
++//   still exactly one list and one cursor; it has grown to include
++//   sellable-but-not-buyable items (Wolf Pelt) alongside the buyable
++//   ones, rather than introducing a second list/cursor for selling.
++//   Concretely: the cursor always refers to one ItemID; A buys it (if
++//   buyable and affordable), X sells one of it from the inventory (if
++//   sellable and held). Mira's Token is excluded from this list
++//   entirely — it's neither buyable nor sellable, so it has nothing to
++//   do in a list whose only two actions are buy and sell.
+ //
+ //   ShopUI is the only runtime state: a cursor index and an open/closed
+-//   bool. It does not own gold or inventory — those live on PlayerState,
+-//   passed into tryBuy() by reference, exactly mirroring how
++//   bool — unchanged shape from Milestone 7. It does not own gold or
++//   inventory — those live on PlayerState, passed into tryBuy()/
++//   trySell() by reference, exactly mirroring how
+ //   GatherNodeManager::tryHarvest() takes PlayerState& rather than
+ //   owning a copy of the player's resources.
+ //
+@@ -27,21 +35,24 @@
+ //   dialogue, and opens ShopUI instead. This reuses the existing
+ //   dialogue-open/closed flow rather than adding a new GameState.
+ //
+-// MEMORY: ShopUI is 3 small fields (~6 bytes). s_shopStock is
++// MEMORY: ShopUI is 2 small fields (~8 bytes). s_shopStock is
+ // MAX_SHOP_ITEMS bytes of static u8 data in .rodata — 0 bytes RAM.
+ //
+-// CPU: tryBuy() is called only on a button press, not every frame, and
+-// iterates at most MAX_SHOP_ITEMS entries (7). Negligible.
++// CPU: tryBuy()/trySell() are called only on a button press, not every
++// frame, and each does O(MAX_SHOP_ITEMS) + O(INVENTORY_SLOTS) work at
++// most (11 + 8 = 19 simple checks). Negligible.
+ //-----------------------------------------------------------------------------
+ 
+ #include "../../include/types.h"
+ #include "../items/ItemDef.h"
+ #include "../quest/PlayerState.h"
+ 
+-static constexpr int MAX_SHOP_ITEMS = 7;
++static constexpr int MAX_SHOP_ITEMS = 11;
+ 
+-// Which items Mira sells, in display order. All currently-buyable items
+-// except Mira's Token (quest-reward only — see ItemDef.h).
++// The single list the shop's cursor walks: every buyable item, plus
++// every sellable-but-not-buyable item (Wolf Pelt), in display order.
++// Excludes Mira's Token (neither buyable nor sellable — nothing to do
++// here). See header comment for why this is one list, not two.
+ static const u8 s_shopStock[MAX_SHOP_ITEMS] = {
+     static_cast<u8>(ItemID::HEALING_HERB),
+     static_cast<u8>(ItemID::TORCH),
+@@ -50,13 +61,37 @@ static const u8 s_shopStock[MAX_SHOP_ITEMS] = {
+     static_cast<u8>(ItemID::LANTERN_OIL),
+     static_cast<u8>(ItemID::SPARE_CORD),
+     static_cast<u8>(ItemID::IRON_NAIL),
++    static_cast<u8>(ItemID::WOLF_PELT),       // sellable, not buyable
++    static_cast<u8>(ItemID::WOODEN_SWORD),
++    static_cast<u8>(ItemID::LEATHER_ARMOR),
++    static_cast<u8>(ItemID::IRON_SWORD),
+ };
+ 
++// Sell price is a fixed fraction of buy price, per the Milestone 9
++// assignment's explicit "50% of buy price" rule — not a separate sell
++// price field on ItemDef, since it's a derived value, not independent
++// data. Integer division truncates (e.g. a 5-gold item sells for 2, not
++// 2.5) rather than rounding, which is the simplest correct behavior and
++// errs in the shop's favor, never the player's, by at most 1 gold.
++static constexpr u32 SELL_PRICE_PERCENT = 50;
++
++inline u32 getSellPrice(const ItemDef& def) {
++    return (static_cast<u32>(def.base_price) * SELL_PRICE_PERCENT) / 100;
++}
++
+ enum class ShopResult : u8 {
+-    NONE,            // no purchase attempted this call
++    NONE,            // no transaction attempted this call
+     PURCHASED,       // gold deducted, item added
++    SOLD,            // item removed, gold granted
+     NOT_ENOUGH_GOLD,
+     INVENTORY_FULL,
++    NOT_BUYABLE,     // item under cursor can't be bought (e.g. Wolf Pelt)
++    NOT_SELLABLE,    // item under cursor can't be sold (currently unreachable
++                      // since the only non-sellable item, Mira's Token, isn't
++                      // in s_shopStock at all — kept as an explicit result
++                      // rather than silently folding into NONE, in case a
++                      // future non-sellable item is ever added to the list)
++    NOTHING_TO_SELL, // player doesn't hold any of the item under the cursor
+ };
+ 
+ class ShopUI {
+@@ -84,15 +119,14 @@ public:
+     int getCursor() const { return m_cursor; }
+ 
+     // Attempt to buy the item currently under the cursor. Deducts gold
+-    // and adds to inventory only on PURCHASED; on NOT_ENOUGH_GOLD or
+-    // INVENTORY_FULL, playerState is left completely unchanged.
++    // and adds to inventory only on PURCHASED; on any other result,
++    // playerState is left completely unchanged.
+     ShopResult tryBuy(PlayerState& playerState) {
+         u8 itemId = s_shopStock[m_cursor];
+         const ItemDef& def = getItemDef(itemId);
+ 
+-        if (playerState.gold < def.base_price) {
+-            return ShopResult::NOT_ENOUGH_GOLD;
+-        }
++        if (!def.buyable) return ShopResult::NOT_BUYABLE;
++        if (playerState.gold < def.base_price) return ShopResult::NOT_ENOUGH_GOLD;
+ 
+         // Check capacity before deducting gold — addItem() would also
+         // fail safely on its own, but checking first avoids a path where
+@@ -106,15 +140,38 @@ public:
+                 break;
+             }
+         }
+-        if (!wouldFit) {
+-            return ShopResult::INVENTORY_FULL;
+-        }
++        if (!wouldFit) return ShopResult::INVENTORY_FULL;
+ 
+         playerState.gold -= def.base_price;
+         playerState.inventory.addItem(itemId, 1);
+         return ShopResult::PURCHASED;
+     }
+ 
++    // Attempt to sell one of the item currently under the cursor.
++    // Removes it from the inventory and grants gold at
++    // getSellPrice(def) only on SOLD; on any other result, playerState
++    // is left completely unchanged.
++    ShopResult trySell(PlayerState& playerState) {
++        u8 itemId = s_shopStock[m_cursor];
++        const ItemDef& def = getItemDef(itemId);
++
++        if (!def.sellable) return ShopResult::NOT_SELLABLE;
++        if (playerState.inventory.getQuantity(itemId) == 0) {
++            return ShopResult::NOTHING_TO_SELL;
++        }
++
++        bool removed = playerState.inventory.removeItem(itemId, 1);
++        if (!removed) return ShopResult::NOTHING_TO_SELL; // shouldn't
++                                                            // happen given
++                                                            // the check above,
++                                                            // but never grant
++                                                            // gold without a
++                                                            // confirmed removal
++
++        playerState.addGold(getSellPrice(def));
++        return ShopResult::SOLD;
++    }
++
+ private:
+     bool m_isOpen = false;
+     int  m_cursor = 0;

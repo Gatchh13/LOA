@@ -520,7 +520,7 @@ void Renderer::drawShop(int cursor, u32 gold, const char* lastMessage, float mes
     C2D_TextParse(&header, m_textBuf, "Mira's Wares");
     C2D_TextOptimize(&header);
     C2D_DrawText(&header, C2D_WithColor | C2D_AtBaseline,
-                 10.0f, 16.0f, 0.7f, 0.6f, 0.6f,
+                 10.0f, 14.0f, 0.7f, 0.55f, 0.55f,
                  C2D_Color32(255, 220, 80, 255));
 
     // Gold, right-aligned-ish
@@ -530,12 +530,18 @@ void Renderer::drawShop(int cursor, u32 gold, const char* lastMessage, float mes
     C2D_TextParse(&goldText, m_textBuf, goldBuf);
     C2D_TextOptimize(&goldText);
     C2D_DrawText(&goldText, C2D_WithColor | C2D_AtBaseline,
-                 230.0f, 16.0f, 0.7f, 0.5f, 0.5f,
+                 230.0f, 14.0f, 0.7f, 0.45f, 0.45f,
                  C2D_Color32(220, 200, 120, 255));
 
-    // Stock rows
-    constexpr float FIRST_ROW_Y = 36.0f;
-    constexpr float ROW_HEIGHT  = 20.0f;
+    // Stock rows — Milestone 9: MAX_SHOP_ITEMS grew from 7 to 11 when
+    // selling was added (Wolf Pelt, Wooden Sword, Leather Armor, Iron
+    // Sword joined the one combined buy/sell list — see Shop.h). 20px
+    // row spacing no longer fits 11 rows above the footer hint on a
+    // 240px-tall screen (11 * 20 = 220, overlapping the footer at
+    // SCREEN_BOT_H-8); tightened to 16px, which fits with room to spare
+    // (11 * 16 = 176) and is still comfortably readable at this font scale.
+    constexpr float FIRST_ROW_Y = 32.0f;
+    constexpr float ROW_HEIGHT  = 16.0f;
 
     for (int i = 0; i < MAX_SHOP_ITEMS; i++) {
         const ItemDef& def = getItemDef(s_shopStock[i]);
@@ -547,7 +553,7 @@ void Renderer::drawShop(int cursor, u32 gold, const char* lastMessage, float mes
             : C2D_Color32(200, 200, 200, 255);
 
         if (isSelected) {
-            drawColorRect(4.0f, rowY - 12.0f,
+            drawColorRect(4.0f, rowY - 10.0f,
                           static_cast<float>(SCREEN_BOT_W) - 8.0f, ROW_HEIGHT - 2.0f,
                           C2D_Color32(60, 60, 90, 160));
         }
@@ -558,31 +564,39 @@ void Renderer::drawShop(int cursor, u32 gold, const char* lastMessage, float mes
         C2D_TextParse(&rowText, m_textBuf, rowBuf);
         C2D_TextOptimize(&rowText);
         C2D_DrawText(&rowText, C2D_WithColor | C2D_AtBaseline,
-                     14.0f, rowY, 0.6f, 0.5f, 0.5f, color);
+                     14.0f, rowY, 0.6f, 0.42f, 0.42f, color);
 
-        char priceBuf[16];
-        snprintf(priceBuf, sizeof(priceBuf), "%ug", def.base_price);
+        // Buy price (blank if not buyable, e.g. Wolf Pelt) and sell
+        // price (blank if not sellable — currently always shown, since
+        // the only non-sellable item, Mira's Token, isn't in this list).
+        char priceBuf[24];
+        if (def.buyable) {
+            snprintf(priceBuf, sizeof(priceBuf), "Buy:%u Sell:%u",
+                     def.base_price, getSellPrice(def));
+        } else {
+            snprintf(priceBuf, sizeof(priceBuf), "Sell:%u", getSellPrice(def));
+        }
         C2D_Text priceText;
         C2D_TextParse(&priceText, m_textBuf, priceBuf);
         C2D_TextOptimize(&priceText);
         C2D_DrawText(&priceText, C2D_WithColor | C2D_AtBaseline,
-                     250.0f, rowY, 0.6f, 0.5f, 0.5f, color);
+                     200.0f, rowY, 0.6f, 0.4f, 0.4f, color);
     }
 
-    // Inline feedback message (purchase result), or the control hint.
+    // Inline feedback message (transaction result), or the control hint.
     if (lastMessage != nullptr && messageTimer > 0.0f) {
         C2D_Text msgText;
         C2D_TextParse(&msgText, m_textBuf, lastMessage);
         C2D_TextOptimize(&msgText);
         C2D_DrawText(&msgText, C2D_WithColor | C2D_AtBaseline,
-                     10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.5f, 0.5f,
+                     10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.45f, 0.45f,
                      C2D_Color32(255, 200, 120, 255));
     } else {
         C2D_Text hint;
-        C2D_TextParse(&hint, m_textBuf, "Up/Down: Select   A: Buy   B: Leave");
+        C2D_TextParse(&hint, m_textBuf, "Up/Down: Select   A: Buy   X: Sell   B: Leave");
         C2D_TextOptimize(&hint);
         C2D_DrawText(&hint, C2D_WithColor | C2D_AtBaseline,
-                     10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.42f, 0.42f,
+                     10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.38f, 0.38f,
                      C2D_Color32(140, 140, 140, 255));
     }
 
@@ -789,7 +803,7 @@ void Renderer::drawTitleScreenBottom() {
 
 //-----------------------------------------------------------------------------
 void Renderer::drawQuestHUD(const char* objectiveText, u16 hp, u16 maxHp,
-                            u32 gold, u8 wood, u8 rope) {
+                            u32 gold, u8 wood, u8 rope, u16 attack, u16 defense) {
     C2D_SceneBegin(m_botTarget);
     C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
 
@@ -850,6 +864,104 @@ void Renderer::drawQuestHUD(const char* objectiveText, u16 hp, u16 maxHp,
     C2D_DrawText(&resText, C2D_WithColor | C2D_AtBaseline,
                  10.0f, 70.0f, 0.7f, 0.55f, 0.55f,
                  C2D_Color32(220, 200, 120, 255));
+
+    // Character stats row (Milestone 9, Feature 6): Attack / Defense.
+    // Text only, no graphical bars, reusing this same HUD surface rather
+    // than a new panel — per the assignment's explicit instruction.
+    char statsBuf[48];
+    snprintf(statsBuf, sizeof(statsBuf), "Attack:%u  Defense:%u", attack, defense);
+    C2D_Text statsText;
+    C2D_TextParse(&statsText, m_textBuf, statsBuf);
+    C2D_TextOptimize(&statsText);
+    C2D_DrawText(&statsText, C2D_WithColor | C2D_AtBaseline,
+                 10.0f, 90.0f, 0.7f, 0.55f, 0.55f,
+                 C2D_Color32(180, 200, 230, 255));
+
+    // Footer hint for the new inventory screen, so the control is
+    // discoverable without needing to read documentation.
+    C2D_Text hint;
+    C2D_TextParse(&hint, m_textBuf, "START: Inventory");
+    C2D_TextOptimize(&hint);
+    C2D_DrawText(&hint, C2D_WithColor | C2D_AtBaseline,
+                 10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.4f, 0.4f,
+                 C2D_Color32(130, 130, 130, 255));
+
+    m_dialogueDrawnThisFrame = true;
+    C2D_SceneBegin(m_topTarget);
+}
+
+//-----------------------------------------------------------------------------
+// drawInventoryScreen  (Milestone 9 — Equipment & Character Progression)
+//
+// The equip/unequip UI: the player's 8 inventory slots as a text list.
+// Empty slots are shown as "-- empty --" rather than hidden, so slot
+// positions stay stable while navigating (see InventoryScreen.h's header
+// comment for why). Equipped items get an "[E]" marker so it's clear at
+// a glance which row, if any, is currently worn — without a second
+// screen or icon set.
+//-----------------------------------------------------------------------------
+void Renderer::drawInventoryScreen(int cursor, const PlayerState& playerState) {
+    C2D_SceneBegin(m_botTarget);
+    C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
+
+    drawColorRect(0.0f, 0.0f,
+                  static_cast<float>(SCREEN_BOT_W), static_cast<float>(SCREEN_BOT_H),
+                  C2D_Color32(15, 15, 25, 230));
+
+    C2D_Text header;
+    C2D_TextParse(&header, m_textBuf, "Inventory");
+    C2D_TextOptimize(&header);
+    C2D_DrawText(&header, C2D_WithColor | C2D_AtBaseline,
+                 10.0f, 14.0f, 0.7f, 0.55f, 0.55f,
+                 C2D_Color32(220, 220, 255, 255));
+
+    constexpr float FIRST_ROW_Y = 34.0f;
+    constexpr float ROW_HEIGHT  = 20.0f; // only 8 rows, so the wider Milestone
+                                          // 7/8 spacing still fits comfortably
+
+    for (int i = 0; i < INVENTORY_SLOTS; i++) {
+        const InventorySlot& slot = playerState.inventory.slots[i];
+        bool isSelected = (i == cursor);
+        float rowY = FIRST_ROW_Y + i * ROW_HEIGHT;
+
+        u32 color = isSelected
+            ? C2D_Color32(255, 240, 180, 255)
+            : C2D_Color32(200, 200, 200, 255);
+
+        if (isSelected) {
+            drawColorRect(4.0f, rowY - 12.0f,
+                          static_cast<float>(SCREEN_BOT_W) - 8.0f, ROW_HEIGHT - 2.0f,
+                          C2D_Color32(60, 60, 90, 160));
+        }
+
+        char rowBuf[40];
+        if (slot.quantity == 0) {
+            snprintf(rowBuf, sizeof(rowBuf), "-- empty --");
+        } else {
+            const ItemDef& def = getItemDef(slot.item_id);
+            bool isEquipped =
+                (def.equip_slot == EquipSlot::WEAPON && playerState.equippedWeapon == slot.item_id) ||
+                (def.equip_slot == EquipSlot::ARMOR  && playerState.equippedArmor  == slot.item_id);
+            if (isEquipped) {
+                snprintf(rowBuf, sizeof(rowBuf), "%s x%u [E]", def.name, slot.quantity);
+            } else {
+                snprintf(rowBuf, sizeof(rowBuf), "%s x%u", def.name, slot.quantity);
+            }
+        }
+
+        C2D_Text rowText;
+        C2D_TextParse(&rowText, m_textBuf, rowBuf);
+        C2D_TextOptimize(&rowText);
+        C2D_DrawText(&rowText, C2D_WithColor | C2D_AtBaseline,
+                     14.0f, rowY, 0.6f, 0.5f, 0.5f, color);
+    }
+
+    C2D_Text hint;
+    C2D_TextParse(&hint, m_textBuf, "Up/Down: Select   A: Equip/Unequip   B: Exit");
+    C2D_TextOptimize(&hint);
+    C2D_DrawText(&hint, C2D_WithColor | C2D_AtBaseline,
+                 10.0f, static_cast<float>(SCREEN_BOT_H) - 8.0f, 0.6f, 0.4f, 0.4f,
+                 C2D_Color32(140, 140, 140, 255));
 
     m_dialogueDrawnThisFrame = true;
     C2D_SceneBegin(m_topTarget);

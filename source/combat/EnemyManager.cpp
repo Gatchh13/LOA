@@ -188,9 +188,20 @@ void EnemyManager::update(ZoneID currentZone, float playerX, float playerY,
             e.attackCooldown -= dt;
             if (e.attackCooldown <= 0.0f) {
                 e.attackCooldown = ENEMY_ATTACK_INTERVAL;
-                playerState.damage(e.contactDamage);
-                LOG("Enemy %d bit the player for %u damage. Player HP: %u/%u",
-                    e.id, e.contactDamage, playerState.hp, playerState.maxHp);
+
+                // Milestone 9 combat formula: enemy_attack - armor_bonus,
+                // minimum 1. Computed in int to avoid u16 underflow if
+                // defense ever exceeded attack (clamped explicitly below
+                // rather than relying on unsigned wraparound never
+                // happening to line up correctly).
+                int rawDamage = static_cast<int>(e.contactDamage)
+                              - static_cast<int>(playerState.getDefense());
+                u16 dmg = static_cast<u16>(rawDamage < 1 ? 1 : rawDamage);
+
+                playerState.damage(dmg);
+                LOG("Enemy %d bit the player for %u damage (atk=%u def=%u). Player HP: %u/%u",
+                    e.id, dmg, e.contactDamage, playerState.getDefense(),
+                    playerState.hp, playerState.maxHp);
             }
         }
     }
@@ -238,11 +249,16 @@ AttackResult EnemyManager::tryAttack(float playerX, float playerY, Facing player
     if (bestIdx < 0) return AttackResult::NONE;
 
     Enemy& e = m_enemies[bestIdx];
-    u16 dmg = PLAYER_ATTACK_DAMAGE;
+    // Milestone 9 combat formula: base_attack + weapon_bonus, via
+    // PlayerState::getAttack() (see PlayerState.h). No minimum-1 clamp
+    // needed here — unlike enemy attack minus armor, there's no
+    // defense-side subtraction on the player's outgoing damage, so it
+    // can never go below PLAYER_BASE_ATTACK.
+    u16 dmg = playerState.getAttack();
     e.hp = (dmg >= e.hp) ? 0 : static_cast<u16>(e.hp - dmg);
 
-    LOG("Player hit enemy %d for %u damage. Enemy HP: %u/%u",
-        e.id, dmg, e.hp, e.maxHp);
+    LOG("Player hit enemy %d for %u damage (atk=%u). Enemy HP: %u/%u",
+        e.id, dmg, playerState.getAttack(), e.hp, e.maxHp);
 
     if (e.hp == 0) {
         // Death: no corpse, no death animation — deactivate immediately.

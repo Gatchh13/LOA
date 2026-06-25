@@ -27,6 +27,7 @@
 #include "../world/GatherNode.h"
 #include "../combat/Enemy.h"
 #include "../world/Shop.h"
+#include "../quest/PlayerState.h"
 #include "../npc/NPC.h"
 #include "../npc/NPCManager.h"
 #include "../entities/AnimState.h"
@@ -101,10 +102,10 @@ public:
     void drawEnemies(const Enemy* enemies, int count,
                      ZoneID currentZone, const Camera& cam);
 
-    // Draw quest objective text, HP, gold, and resources on bottom screen.
-    // objectiveText: nullptr = show "No active quest".
+    // Draw quest objective text, HP, gold, resources, and attack/defense
+    // on bottom screen. objectiveText: nullptr = show "No active quest".
     void drawQuestHUD(const char* objectiveText, u16 hp, u16 maxHp,
-                      u32 gold, u8 wood, u8 rope);
+                      u32 gold, u8 wood, u8 rope, u16 attack, u16 defense);
 
     // Draw a centered status message on the top screen (e.g. "Game Saved").
     // alpha [0,1] for fade in/out. Call after world geometry, before endFrame.
@@ -128,6 +129,12 @@ public:
     // "QUEST / No active quest / Gold:0 Wood:0 Rope:0" onto a screen that
     // has nothing to do with gameplay yet.
     void drawTitleScreenBottom();
+
+    // Draw the equip/unequip inventory screen (Milestone 9): the
+    // player's 8 inventory slots as a text list, cursor highlight,
+    // equipped items marked with "[E]". Mirrors drawShop's structure —
+    // same header-bar/row-list/footer-hint layout.
+    void drawInventoryScreen(int cursor, const PlayerState& playerState);
 
     void endFrame();
 

@@ -23,9 +23,13 @@
 //   Step 0: TALK_TO_NPC   (Mira, npc_id=1) — accept quest
 //   Step 1: REACH_MARKER  (Forest marker at tile 13,11)
 //   Step 2: RETURN_TO_NPC (Mira, npc_id=1) — hand in
-//   Reward: 50 gold + 1x Mira's Token (proves the item-reward path
-//   end to end with a non-purchasable item, not just a gold-equivalent
-//   consumable).
+//   Reward: 50 gold + 1x Wooden Sword (Milestone 9 — changed from
+//   Mira's Token to prove the quest -> equipment path specifically;
+//   see the Milestone 9 design doc's Feature 8). Mira's Token remains
+//   defined in ItemDef.h (not deleted) but is no longer granted by any
+//   quest — it's not removed from the registry just because nothing
+//   currently hands it out, the same way MAX_ENEMIES has unused slots
+//   reserved for future growth.
 //
 // Memory: all data is static const in ROM — 0 bytes RAM.
 //-----------------------------------------------------------------------------
@@ -166,7 +170,7 @@ static const QuestDef s_questDefs[] = {
         "The Missing Package",
         s_missingPackageSteps,
         3,
-        { /*gold=*/ 50, /*item_id=*/ static_cast<u8>(ItemID::MIRAS_TOKEN), /*item_qty=*/ 1 }
+        { /*gold=*/ 50, /*item_id=*/ static_cast<u8>(ItemID::WOODEN_SWORD), /*item_qty=*/ 1 }
     },
 };
 

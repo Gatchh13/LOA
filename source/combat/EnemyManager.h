@@ -34,7 +34,11 @@
 // since they describe the player's attack, not enemy data.
 static constexpr float ATTACK_RANGE_PX     = 20.0f;  // melee reach from player center
 static constexpr float ATTACK_COOLDOWN_SEC = 0.5f;   // time between player attacks
-static constexpr u16   PLAYER_ATTACK_DAMAGE = 15;
+// Milestone 9: player damage is now PlayerState::getAttack() (base +
+// weapon bonus), not a flat constant — see EnemyManager.cpp::tryAttack().
+// The old PLAYER_ATTACK_DAMAGE constant is gone rather than left unused
+// alongside the new formula, which would invite using the stale one by
+// accident.
 
 // Enemy AI tuning constants.
 static constexpr float ENEMY_DETECT_RANGE_PX = 64.0f;  // Idle -> Chase threshold

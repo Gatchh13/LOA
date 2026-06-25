@@ -40,6 +40,17 @@
 //   game). Pre-Milestone-8 saves (version 6 and earlier) will be
 //   rejected and the player will start a fresh game.
 //
+//   Milestone 9 bumps SAVE_VERSION 7 -> 8: adds equipped_weapon/
+//   equipped_armor (2 bytes — u8 ItemID each, or NO_EQUIPMENT/0xFF for
+//   an empty slot; see PlayerState.h). To keep sizeof(SaveData)
+//   unchanged, reserved_titles shrinks from 8 to 6 bytes — the
+//   "unlocked title bitfield" concept is just as unrelated to equipment
+//   as Milestone 8's HP fields were to skills, so this follows the same
+//   "take from the least-related reserved block" reasoning rather than
+//   touching reserved_skills again. Pre-Milestone-9 saves (version 7
+//   and earlier) will be rejected and the player will start a fresh
+//   game, per the same no-migration policy as every prior bump.
+//
 // FUTURE EXTENSION:
 //   Each remaining "reserved" block is named for its intended future
 //   system. inventory_pad[48] is reserved specifically for inventory
@@ -61,7 +72,7 @@
 #include "../quest/QuestManager.h"
 #include <cstddef>  // offsetof
 
-static constexpr u16 SAVE_VERSION   = 7;     // bump on every layout change
+static constexpr u16 SAVE_VERSION   = 8;     // bump on every layout change
 static constexpr u32 SAVE_MAGIC     = 0x4C4F4100;  // "LOA\0"
 
 //-----------------------------------------------------------------------------
@@ -151,6 +162,16 @@ struct SaveData {
     u8            inventory_pad[48];            // reserved for future inventory growth
 
     //-------------------------------------------------------------------------
+    // Equipment (2 bytes) — Milestone 9
+    // u8 ItemID each, or NO_EQUIPMENT (0xFF) for an empty slot — see
+    // PlayerState.h. Only two slots exist (weapon, armor) per the
+    // Milestone 9 assignment's explicit scope, so these are two named
+    // fields, not an array.
+    //-------------------------------------------------------------------------
+    u8  equipped_weapon;
+    u8  equipped_armor;
+
+    //-------------------------------------------------------------------------
     // Reserved blocks for future systems
     // Replace with real structs when those milestones arrive.
     // Bump SAVE_VERSION when any block changes.
@@ -160,7 +181,10 @@ struct SaveData {
                                     // was 32 bytes, see version-history
                                     // comment above for why this block)
     u8  reserved_reputation[16];   // Future: faction reputation
-    u8  reserved_titles[8];        // Future: unlocked title bitfield
+    u8  reserved_titles[6];        // Future: unlocked title bitfield (2
+                                    // bytes donated to equipped_weapon/
+                                    // equipped_armor in Milestone 9 —
+                                    // was 8 bytes)
     u8  reserved_crafting[16];     // Future: crafting unlock flags
     u8  reserved_housing[16];      // Future: housing state
 };

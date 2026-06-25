@@ -1,7 +1,7 @@
 #pragma once
 
 //-----------------------------------------------------------------------------
-// PlayerState.h  (Milestone 8 — Combat Foundation: adds HP)
+// PlayerState.h  (Milestone 9 — Equipment & Character Progression)
 //
 // Additions:
 //   wood  — used to repair bridges and clear fallen trees
@@ -16,6 +16,16 @@
 //               leveling system to raise maxHp past 255 without another
 //               field-width change. Two extra bytes is not worth
 //               optimizing away for that headroom.
+//   equippedWeapon / equippedArmor — Milestone 9. u8 ItemID of the
+//               currently-equipped item in each slot, or NO_EQUIPMENT
+//               (0xFF) if the slot is empty. 0xFF rather than 0 because
+//               0 is a valid real ItemID (Healing Herb) — using 0 as
+//               "empty" would be ambiguous the moment a real item with
+//               ID 0 could ever be equipped. There are only two slots
+//               (weapon, armor) per the assignment's explicit scope —
+//               no array, no slot-index abstraction, just two named
+//               fields, since "two of them, forever" doesn't benefit
+//               from being generalized into a loop over N slots.
 //
 // PlayerState is a plain struct: no custom constructor. New-game starting
 // values are set explicitly via init() rather than baked into a constructor,
@@ -27,18 +37,38 @@
 // nodes in Forest, so a fresh game requires gathering before repairing the
 // bridge (5 wood), ladder (3 rope), or fallen tree (8 wood).
 //
-// Starting HP is 100/100 per the Milestone 8 assignment.
+// Starting HP is 100/100 per the Milestone 8 assignment. Starting
+// equipment is empty (both slots NO_EQUIPMENT) — the player earns their
+// first weapon via the Missing Package quest reward (Milestone 9,
+// Feature 8), not by starting with one.
 //
 // Save-friendly: struct embeds into SaveData verbatim. All fields are
 // plain integer types or the POD Inventory struct. No pointers. No
 // dynamic allocation.
 //
-// Memory: 28 bytes (24 bytes from Milestone 7 + 4 bytes for hp/maxHp).
+// Memory: 32 bytes (28 bytes from Milestone 8 + 2 bytes for the two
+// equipment slot fields + 2 bytes trailing padding to keep the struct's
+// total size a multiple of 4, required since PlayerState starts with a
+// u32 and is embedded by value in other structs — verified via
+// offsetof/sizeof, not assumed: equippedArmor lands at offset 29, and
+// the struct rounds up to 32).
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
 #include "Inventory.h"
 #include "../items/ItemDef.h"
+
+// Sentinel for "no item equipped in this slot" — see header comment for
+// why 0xFF rather than 0.
+static constexpr u8 NO_EQUIPMENT = 0xFF;
+
+// Base stats before equipment bonuses. Named here (not buried as a
+// magic number in EnemyManager.cpp) since both the combat formula and
+// the stats-panel HUD need the same starting point.
+static constexpr u16 PLAYER_BASE_ATTACK  = 15;  // matches Milestone 8's
+                                                  // flat PLAYER_ATTACK_DAMAGE
+static constexpr u16 PLAYER_BASE_DEFENSE = 0;   // no innate defense —
+                                                  // armor is the only source
 
 struct PlayerState {
     u32       gold;
@@ -48,6 +78,8 @@ struct PlayerState {
     Inventory inventory;
     u16       hp;
     u16       maxHp;
+    u8        equippedWeapon;  // ItemID, or NO_EQUIPMENT
+    u8        equippedArmor;   // ItemID, or NO_EQUIPMENT
 
     // Set new-game starting values. Call once when starting a fresh game
     // (not on load — SaveManager::apply() overwrites these fields directly
@@ -61,6 +93,8 @@ struct PlayerState {
         inventory.init();
         maxHp  = 100;
         hp     = maxHp;
+        equippedWeapon = NO_EQUIPMENT;
+        equippedArmor  = NO_EQUIPMENT;
     }
 
     void addGold(u32 amount)  { gold += amount; }
@@ -110,6 +144,72 @@ struct PlayerState {
         if (def.heal_amount == 0) return false; // not a healing item
         if (!inventory.removeItem(item_id, 1))  return false; // don't have one
         heal(def.heal_amount);
+        return true;
+    }
+
+    // Total attack: base + equipped weapon's bonus (0 if no weapon
+    // equipped). Used by EnemyManager::tryAttack() for the combat
+    // formula and by the Milestone 9 stats-panel HUD.
+    u16 getAttack() const {
+        u16 bonus = (equippedWeapon != NO_EQUIPMENT)
+                   ? getItemDef(equippedWeapon).attack_bonus : 0;
+        return PLAYER_BASE_ATTACK + bonus;
+    }
+
+    // Total defense: base + equipped armor's bonus (0 if no armor
+    // equipped). Subtracted from incoming enemy damage in
+    // EnemyManager::update()'s contact-damage formula.
+    u16 getDefense() const {
+        u16 bonus = (equippedArmor != NO_EQUIPMENT)
+                   ? getItemDef(equippedArmor).defense_bonus : 0;
+        return PLAYER_BASE_DEFENSE + bonus;
+    }
+
+    // Equip an item from the inventory into its ItemDef::equip_slot.
+    // If something is already equipped in that slot, it's returned to
+    // the inventory first (swap, not stack — the assignment's "old item
+    // returns to inventory" requirement). Returns false (no change) if
+    // the item isn't equipment, isn't held, or the swap-back would fail
+    // because the inventory has no room for the previously-equipped item.
+    bool equipItem(u8 item_id) {
+        const ItemDef& def = getItemDef(item_id);
+        if (def.equip_slot == EquipSlot::NONE) return false; // not equipment
+        if (inventory.getQuantity(item_id) == 0) return false; // don't have it
+
+        u8& slot = (def.equip_slot == EquipSlot::WEAPON) ? equippedWeapon : equippedArmor;
+
+        if (slot == item_id) return false; // already equipped — use
+                                            // unequipItem() for that, not this
+
+        // Pull the new item out of the inventory before doing anything
+        // else, so a failure below leaves nothing half-applied.
+        if (!inventory.removeItem(item_id, 1)) return false;
+
+        if (slot != NO_EQUIPMENT) {
+            // Return the previously-equipped item to the inventory. If
+            // this fails (inventory completely full of unrelated items),
+            // undo the removeItem above and refuse the whole operation —
+            // equipping should never destroy the old item as a side effect.
+            if (!inventory.addItem(slot, 1)) {
+                inventory.addItem(item_id, 1); // put the new item back
+                return false;
+            }
+        }
+
+        slot = item_id;
+        return true;
+    }
+
+    // Unequip whatever is in `slot_type`, returning it to the inventory.
+    // Returns false (no change) if that slot is already empty, or if
+    // the inventory has no room for the returned item.
+    bool unequipItem(EquipSlot slot_type) {
+        u8& slot = (slot_type == EquipSlot::WEAPON) ? equippedWeapon : equippedArmor;
+        if (slot_type == EquipSlot::NONE)  return false;
+        if (slot == NO_EQUIPMENT)          return false;
+
+        if (!inventory.addItem(slot, 1)) return false; // no room — refuse
+        slot = NO_EQUIPMENT;
         return true;
     }
 };

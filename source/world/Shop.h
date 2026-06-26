@@ -44,7 +44,7 @@
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
-#include "../items/ItemDef.h"
+#include "../data/ItemDatabase.h"
 #include "../quest/PlayerState.h"
 
 static constexpr int MAX_SHOP_ITEMS = 11;

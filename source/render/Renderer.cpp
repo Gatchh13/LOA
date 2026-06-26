@@ -193,8 +193,9 @@ void Renderer::drawNPCs(const NPCManager& mgr, ZoneID currentZone, const Camera&
 
     for (int i = 0; i < count; i++) {
         const NPC& npc = npcs[i];
-        if (!npc.active)                  continue;
-        if (npc.home_zone != currentZone)  continue;
+        if (!npc.active) continue;
+        const NPCDef& def = getNPCDef(npc.defIndex);
+        if (def.home_zone != currentZone) continue;
 
         float sx = npc.pos_x - static_cast<float>(cam.getX());
         float sy = npc.pos_y - static_cast<float>(cam.getY());
@@ -428,6 +429,8 @@ void Renderer::drawZoneName(const char* name, float alpha) {
 void Renderer::drawDialogue(const NPC* npc) {
     if (!npc) return;
 
+    const NPCDef& def = getNPCDef(npc->defIndex);
+
     C2D_SceneBegin(m_botTarget);
     C2D_TargetClear(m_botTarget, C2D_Color32(20, 20, 20, 255));
 
@@ -443,7 +446,7 @@ void Renderer::drawDialogue(const NPC* npc) {
 
     // NPC name
     C2D_Text nameText;
-    C2D_TextParse(&nameText, m_textBuf, npc->name);
+    C2D_TextParse(&nameText, m_textBuf, def.name);
     C2D_TextOptimize(&nameText);
     C2D_DrawText(&nameText, C2D_WithColor | C2D_AtBaseline,
                  10.0f, 22.0f, 0.8f, 0.65f, 0.65f,
@@ -452,7 +455,7 @@ void Renderer::drawDialogue(const NPC* npc) {
     // Choose text: quest override takes priority
     const char* rawText = (npc->dialogue_override != nullptr)
                           ? npc->dialogue_override
-                          : npc->dialogue;
+                          : def.dialogue;
 
     // Split on \n into at most two lines
     char line1[MAX_DIALOGUE_LEN] = {};
@@ -674,8 +677,9 @@ void Renderer::drawEnemies(const Enemy* enemies, int count,
         // HP sliver above the sprite — full width = full HP, scales down
         // as the enemy takes damage. Hidden entirely at full HP so an
         // undamaged enemy doesn't show a redundant always-full bar.
-        if (e.hp < e.maxHp) {
-            float pct = static_cast<float>(e.hp) / static_cast<float>(e.maxHp);
+        u16 maxHp = getEnemyDef(e.type).maxHp;
+        if (e.hp < maxHp) {
+            float pct = static_cast<float>(e.hp) / static_cast<float>(maxHp);
             drawColorRect(sx, sy - 5.0f, ENEMY_W, 3.0f, C2D_Color32(40, 10, 10, 200));
             drawColorRect(sx, sy - 5.0f, ENEMY_W * pct, 3.0f, C2D_Color32(200, 50, 50, 255));
         }

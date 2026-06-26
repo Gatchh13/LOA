@@ -158,6 +158,21 @@ void QuestManager::advanceStep(u8 quest_id, PlayerState& playerState) {
         m_questJustCompleted = true;
         applyReward(qd, playerState);
         LOG("Quest '%s' COMPLETE! Reward: %u gold", qd.title, qd.reward.gold);
+
+        // Milestone 10: Well Repair becomes available once Missing
+        // Package completes. This is a single, explicit, named
+        // relationship — not a general "quest chain" or "unlock"
+        // system. With exactly two quests and exactly one dependency
+        // between them, a generic system would be speculative
+        // architecture; this one `if` is the smallest correct way to
+        // express "the second quest unlocks after the first."
+        if (quest_id == QUEST_MISSING_PACKAGE) {
+            bool started = startQuest(QUEST_WELL_REPAIR);
+            (void)started; // always true here: Missing Package just
+                            // went COMPLETE, so it's no longer the
+                            // active quest blocking startQuest()'s guard
+            LOG("Quest 'The Town Well' is now available.");
+        }
     } else {
         LOG("Quest '%s' advanced to step %d: %s",
             qd.title, qs.current_step,

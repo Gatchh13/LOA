@@ -48,7 +48,7 @@
 
 #include "../../include/types.h"
 #include "../quest/PlayerState.h"
-#include "../items/ItemDef.h"
+#include "../data/ItemDatabase.h"
 
 enum class InventoryAction : u8 {
     NONE,      // no action attempted this call, or the slot under the

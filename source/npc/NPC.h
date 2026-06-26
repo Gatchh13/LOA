@@ -1,16 +1,22 @@
 #pragma once
 
 //-----------------------------------------------------------------------------
-// NPC.h  (Milestone 6 — adds sprite animation state)
-// Plain data structs for NPCs. No inheritance. No vtables.
+// NPC.h  (Milestone 10 — static data split out to NPCDef.h)
+// Plain data struct for NPC RUNTIME state. No inheritance. No vtables.
 //
 // Design:
 //   NPCs are value types stored in a fixed-size array in NPCManager.
-//   The schedule system uses total in-game minutes for comparison so
-//   crossing midnight works correctly without special cases.
+//   Static data (name, dialogue, home zone, schedule contents) now
+//   lives in NPCDef.h/NPCDatabase — this struct holds only what
+//   genuinely changes during play: position, which schedule entry is
+//   currently active, animation state, and dialogue-open status.
 //
 // Schedule:
-//   Each NPC has up to MAX_SCHEDULE_ENTRIES schedule entries.
+//   ScheduleEntry stays defined here (not NPCDef.h) since NPCManager's
+//   movement code (moveNPC, evaluateSchedule) operates on
+//   ScheduleEntry directly and NPCDef.h already depends on NPC.h for
+//   it — keeping the type in NPC.h avoids a circular header dependency
+//   between NPC.h and NPCDef.h.
 //   Each entry says: "at or after this time, go to this tile position."
 //   The active entry is the one with the highest start_minute <= current time.
 //   Entries must be sorted by start_minute ascending in the data.
@@ -21,31 +27,29 @@
 //   pixels of their target.
 //
 // Dialogue:
-//   Each NPC has one static dialogue line (no branching).
-//   The dialogue box is shown by the renderer when dialogue_active is true.
-//
-// Zone restriction:
-//   home_zone is the zone where this NPC lives. NPCs in other zones are
-//   simply not updated or drawn — they teleport to their scheduled position
-//   when the player enters their home zone.
+//   The default dialogue line now lives on NPCDef (see NPCDef.h).
+//   dialogue_override (here, runtime) takes priority when QuestManager
+//   sets it; nullptr means "use NPCDef's default dialogue instead."
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
 #include "../entities/AnimState.h"
 
 static constexpr int MAX_SCHEDULE_ENTRIES = 8;
-static constexpr int MAX_NPC_NAME_LEN     = 20;
-static constexpr int MAX_DIALOGUE_LEN     = 80;
+static constexpr int MAX_NPC_NAME_LEN     = 20;  // still used by NPCDatabase's
+                                                   // static_assert-style sanity
+                                                   // checks on name length, even
+                                                   // though NPC no longer stores
+                                                   // a fixed name buffer itself
+static constexpr int MAX_DIALOGUE_LEN     = 80;  // same role for dialogue length
 static constexpr float NPC_SPEED          = 50.0f;  // pixels per second
 static constexpr float ARRIVAL_THRESHOLD  = 2.0f;   // pixels — "close enough"
 static constexpr float INTERACT_RANGE_PX  = 32.0f;  // max distance for A-button dialogue
 
 //-----------------------------------------------------------------------------
 // ScheduleEntry
-// One entry in an NPC's daily schedule.
-// start_minute: in-game minute of day (0–1439) when this entry becomes active.
-// dest_tx/ty: destination tile coordinates in the NPC's home zone.
-// label: short string shown in debug overlay (e.g. "Forge", "Home")
+// One entry in an NPC's daily schedule. Defined here (not NPCDef.h) —
+// see header comment above.
 //-----------------------------------------------------------------------------
 struct ScheduleEntry {
     int   start_minute; // 0–1439 (e.g. 8*60=480 for 08:00)
@@ -55,26 +59,23 @@ struct ScheduleEntry {
 };
 
 //-----------------------------------------------------------------------------
-// NPC
-// All state for one NPC. Fits in ~210 bytes.
+// NPC — runtime state only. Identity/schedule-content/dialogue-text now
+// live on NPCDef (see NPCDef.h), referenced here by defIndex.
 //-----------------------------------------------------------------------------
 struct NPC {
-    // Identity
-    u8    npc_id;                     // unique ID, matches target_npc_id in QuestStep
-    char  name[MAX_NPC_NAME_LEN];
-    char  dialogue[MAX_DIALOGUE_LEN];
-    ZoneID home_zone;                 // zone where this NPC lives
+    // Identity reference — which NPCDef this instance represents.
+    // NPCManager::init() sets this once; nothing else changes it.
+    u8 defIndex;
 
     // Position (pixel coordinates, top-left of 16×16 sprite)
     float pos_x;
     float pos_y;
 
-    // Schedule
-    ScheduleEntry schedule[MAX_SCHEDULE_ENTRIES];
-    int           schedule_count;
-    int           active_entry;       // index of current schedule entry
-    float         target_x;          // pixel target derived from schedule
-    float         target_y;
+    // Schedule progress (the schedule's CONTENT is on NPCDef; this is
+    // just "which entry is currently active" and the derived target).
+    int   active_entry;       // index into NPCDef::schedule
+    float target_x;          // pixel target derived from schedule
+    float target_y;
 
     // Animation state — driven by moveNPC()'s per-axis movement each frame.
     // Not saved (see AnimState.h): always derives correctly from a fresh
@@ -86,8 +87,7 @@ struct NPC {
     bool        active;                     // false = this NPC slot is unused
 
     // Quest dialogue override — set by NPCManager when QuestManager provides
-    // context-sensitive text. nullptr = use normal dialogue field.
+    // context-sensitive text. nullptr = use NPCDef's default dialogue.
     // Points to a string literal in QuestDef — never heap-allocated.
     const char* dialogue_override;
 };
-

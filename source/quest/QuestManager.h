@@ -34,7 +34,7 @@
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
-#include "QuestDef.h"
+#include "QuestDatabase.h"
 #include "PlayerState.h"
 
 enum class QuestStatus : u8 {

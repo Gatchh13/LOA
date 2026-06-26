@@ -1,9 +1,10 @@
 //-----------------------------------------------------------------------------
-// EnemyManager.cpp
+// EnemyManager.cpp  (Milestone 10 — consumes EnemyDatabase + SpawnDatabase)
 //-----------------------------------------------------------------------------
 
 #include "EnemyManager.h"
-#include "../items/ItemDef.h"
+#include "../data/ItemDatabase.h"
+#include "../world/SpawnDatabase.h"
 #include "../core/Logger.h"
 #include <cstring>
 #include <cstdio>
@@ -11,42 +12,25 @@
 #include <algorithm>
 
 //=============================================================================
-// ENEMY DEFINITIONS
+// EnemyManager
 //
-// One Forest Wolf, per the Milestone 8 assignment's explicit "one enemy
-// type only" scope rule. Placed at tile (6,19) in Forest — checked
-// against s_forestTiles in ZoneData.h to land on plain TILE_FOREST_FLOOR
-// (2), clear of all four GatherNodeManager nodes ((5,5), (24,6), (8,16),
-// (20,18)), the rope-ladder WorldObject (0,3)-(0,5), the fallen-tree
-// WorldObject (22,11)-(22,12), the Forest spawn points, and the north-
-// south dirt path (columns 13-14). Far enough from the south entrance
-// (player typically arrives near row 21) that the wolf isn't an instant
-// ambush on zone entry, but well within a short walk.
-//=============================================================================
-
-static void defineEnemies(Enemy* enemies) {
-    enemies[0].id            = 0;
-    enemies[0].zone          = ZoneID::FOREST;
-    enemies[0].spawn_x       = 6 * TILE_SIZE + 8.0f;   // 104
-    enemies[0].spawn_y       = 19 * TILE_SIZE + 8.0f;  // 312
-    enemies[0].pos_x         = enemies[0].spawn_x;
-    enemies[0].pos_y         = enemies[0].spawn_y;
-    enemies[0].maxHp         = 40;
-    enemies[0].hp            = enemies[0].maxHp;
-    enemies[0].contactDamage = 10;
-    enemies[0].lootItemId    = static_cast<u8>(ItemID::WOLF_PELT);
-    enemies[0].state         = EnemyAIState::IDLE;
-    enemies[0].attackCooldown = 0.0f;
-    enemies[0].anim           = AnimState{};
-    enemies[0].active         = true;
-
-    // Remaining MAX_ENEMIES-1 slots stay inactive — headroom for a
-    // future second enemy instance/type, not used in Milestone 8.
-    for (int i = 1; i < MAX_ENEMIES; i++) {
-        enemies[i].active = false;
-    }
-}
-
+// Milestone 10 change: defineEnemies() (which hardcoded the one Forest
+// Wolf's position AND its type-level stats inline) is gone. init() now
+// populates m_enemies generically from SpawnDatabase (where, what type)
+// and reads each instance's starting hp from EnemyDatabase (how much
+// HP that type has) — the same split GatherNodeManager/WorldObjectManager
+// don't yet have, but enemies now do, per the Milestone 10 assignment.
+//
+// A side effect noticed while migrating, not introduced by it:
+// respawnAll() previously hardcoded "slot 0 is always the Wolf" to
+// work around enemies not tracking which spawn entry they came from.
+// Now that every Enemy instance carries spawn_x/spawn_y AND a `type`
+// (read from SpawnEntry at init() time), respawnAll() no longer needs
+// that special case — it can just check `active || was-ever-populated`
+// generically. This was flagged as a known risk in the Milestone 8
+// design doc specifically because it wouldn't generalize past one
+// enemy; Milestone 10's spawn-table split is what removes the need
+// for the special case, not a deliberate fix attempted on its own.
 //=============================================================================
 
 EnemyManager::EnemyManager()
@@ -59,16 +43,41 @@ EnemyManager::EnemyManager()
 }
 
 void EnemyManager::init() {
-    defineEnemies(m_enemies);
-    LOG("EnemyManager: initialized 1 enemy (Forest Wolf)");
+    int spawnCount = getSpawnCount();
+    for (int i = 0; i < MAX_ENEMIES; i++) {
+        m_enemies[i].active = false;
+    }
+
+    for (int i = 0; i < spawnCount && i < MAX_ENEMIES; i++) {
+        const SpawnEntry& spawn = getSpawnEntry(i);
+        const EnemyDef&   def   = getEnemyDef(spawn.type);
+
+        Enemy& e = m_enemies[i];
+        e.id              = static_cast<u8>(i);
+        e.type            = spawn.type;
+        e.zone            = spawn.zone;
+        e.spawn_x         = spawn.spawn_x;
+        e.spawn_y         = spawn.spawn_y;
+        e.pos_x           = spawn.spawn_x;
+        e.pos_y           = spawn.spawn_y;
+        e.hp              = def.maxHp;
+        e.state           = EnemyAIState::IDLE;
+        e.attackCooldown  = 0.0f;
+        e.anim            = AnimState{};
+        e.active          = true;
+    }
+
+    LOG("EnemyManager: initialized %d enemies from %d spawn entries",
+        spawnCount < MAX_ENEMIES ? spawnCount : MAX_ENEMIES, spawnCount);
 }
 
 //-----------------------------------------------------------------------------
 // moveToward — single-axis-at-a-time step toward a target, with a tile-
 // solid check. This is NPCManager::moveNPC's exact pattern (horizontal
 // first, then vertical, clamped step, isSolid check) reused verbatim per
-// the assignment's instruction to reuse existing patterns rather than
-// invent movement logic. Returns true if the enemy actually moved.
+// the Milestone 8 assignment's instruction to reuse existing patterns
+// rather than invent movement logic. Returns true if the enemy actually
+// moved.
 //-----------------------------------------------------------------------------
 bool EnemyManager::moveToward(Enemy& e, float targetX, float targetY,
                               float dt, const TileMap& map) {
@@ -110,9 +119,10 @@ bool EnemyManager::moveToward(Enemy& e, float targetX, float targetY,
 
 //-----------------------------------------------------------------------------
 // updateAI — Idle -> Chase -> Attack -> Return state machine.
-// No pathfinding, no obstacle avoidance, no behavior trees — exactly as
-// scoped. State transitions are pure distance checks against the
-// player's current position.
+// No pathfinding, no obstacle avoidance, no behavior trees. State
+// transitions are pure distance checks against the player's current
+// position. Generic over EnemyType — nothing here special-cases the
+// Wolf specifically, so a second enemy type needs no changes here.
 //-----------------------------------------------------------------------------
 void EnemyManager::updateAI(Enemy& e, float playerX, float playerY,
                             float dt, const TileMap& map) {
@@ -189,18 +199,20 @@ void EnemyManager::update(ZoneID currentZone, float playerX, float playerY,
             if (e.attackCooldown <= 0.0f) {
                 e.attackCooldown = ENEMY_ATTACK_INTERVAL;
 
+                const EnemyDef& def = getEnemyDef(e.type);
+
                 // Milestone 9 combat formula: enemy_attack - armor_bonus,
                 // minimum 1. Computed in int to avoid u16 underflow if
                 // defense ever exceeded attack (clamped explicitly below
                 // rather than relying on unsigned wraparound never
                 // happening to line up correctly).
-                int rawDamage = static_cast<int>(e.contactDamage)
+                int rawDamage = static_cast<int>(def.contactDamage)
                               - static_cast<int>(playerState.getDefense());
                 u16 dmg = static_cast<u16>(rawDamage < 1 ? 1 : rawDamage);
 
                 playerState.damage(dmg);
-                LOG("Enemy %d bit the player for %u damage (atk=%u def=%u). Player HP: %u/%u",
-                    e.id, dmg, e.contactDamage, playerState.getDefense(),
+                LOG("Enemy %d (%s) bit the player for %u damage (atk=%u def=%u). Player HP: %u/%u",
+                    e.id, def.name, dmg, def.contactDamage, playerState.getDefense(),
                     playerState.hp, playerState.maxHp);
             }
         }
@@ -249,6 +261,8 @@ AttackResult EnemyManager::tryAttack(float playerX, float playerY, Facing player
     if (bestIdx < 0) return AttackResult::NONE;
 
     Enemy& e = m_enemies[bestIdx];
+    const EnemyDef& def = getEnemyDef(e.type);
+
     // Milestone 9 combat formula: base_attack + weapon_bonus, via
     // PlayerState::getAttack() (see PlayerState.h). No minimum-1 clamp
     // needed here — unlike enemy attack minus armor, there's no
@@ -257,28 +271,28 @@ AttackResult EnemyManager::tryAttack(float playerX, float playerY, Facing player
     u16 dmg = playerState.getAttack();
     e.hp = (dmg >= e.hp) ? 0 : static_cast<u16>(e.hp - dmg);
 
-    LOG("Player hit enemy %d for %u damage (atk=%u). Enemy HP: %u/%u",
-        e.id, dmg, playerState.getAttack(), e.hp, e.maxHp);
+    LOG("Player hit enemy %d (%s) for %u damage (atk=%u). Enemy HP: %u/%u",
+        e.id, def.name, dmg, playerState.getAttack(), e.hp, def.maxHp);
 
     if (e.hp == 0) {
         // Death: no corpse, no death animation — deactivate immediately.
         e.active = false;
 
-        bool added = playerState.inventory.addItem(e.lootItemId, 1);
-        const ItemDef& lootDef = getItemDef(e.lootItemId);
+        bool added = playerState.inventory.addItem(def.lootItemId, 1);
+        const ItemDef& lootDef = getItemDef(def.lootItemId);
         if (added) {
-            snprintf(m_messageBuf, sizeof(m_messageBuf), "Wolf defeated! +1 %s", lootDef.name);
+            snprintf(m_messageBuf, sizeof(m_messageBuf), "%s defeated! +1 %s", def.name, lootDef.name);
         } else {
             // Inventory full — same "don't block the game state change,
             // just lose the item and say so" choice as
             // QuestManager::applyReward's full-inventory case.
-            snprintf(m_messageBuf, sizeof(m_messageBuf), "Wolf defeated! (inventory full)");
-            WARN("Enemy %d loot lost — inventory full (item_id=%u)", e.id, e.lootItemId);
+            snprintf(m_messageBuf, sizeof(m_messageBuf), "%s defeated! (inventory full)", def.name);
+            WARN("Enemy %d loot lost — inventory full (item_id=%u)", e.id, def.lootItemId);
         }
         m_lastMessage  = m_messageBuf;
         m_messageTimer = MESSAGE_DURATION;
 
-        LOG("Enemy %d defeated. Loot: %s (added=%d)", e.id, lootDef.name, added);
+        LOG("Enemy %d (%s) defeated. Loot: %s (added=%d)", e.id, def.name, lootDef.name, added);
         return AttackResult::KILLED;
     }
 
@@ -295,16 +309,24 @@ void EnemyManager::updateMessageTimer(float dt) {
 }
 
 void EnemyManager::respawnAll() {
-    for (int i = 0; i < MAX_ENEMIES; i++) {
+    // Milestone 10: no longer hardcodes "slot 0 is the Wolf" — every
+    // slot that init() populated from SpawnDatabase (spawn_x/spawn_y
+    // are only ever set by init(), never zeroed except by the
+    // constructor's memset) gets revived, regardless of which index it
+    // is or whether it died. A genuinely unused slot has spawn_x ==
+    // spawn_y == 0 AND was never set active by init(), so checking
+    // spawn position alone isn't quite enough on its own — but combined
+    // with the fact that init() always sets every spawned slot's `type`
+    // field too, and a never-populated slot's `type` defaults to
+    // EnemyType::FOREST_WOLF (0) from the constructor's memset, the
+    // cleanest unambiguous signal is whether this slot index is within
+    // the spawn table's actual count, which init() already established.
+    int spawnCount = getSpawnCount();
+    for (int i = 0; i < spawnCount && i < MAX_ENEMIES; i++) {
         Enemy& e = m_enemies[i];
-        if (i == 0) {
-            // Slot 0 is always the Wolf in Milestone 8 — re-activate it
-            // even though death set active=false (every other field is
-            // still intact; death only flips the one flag).
-            e.active = true;
-        }
-        if (!e.active) continue;
-        e.hp     = e.maxHp;
+        const EnemyDef& def = getEnemyDef(e.type);
+        e.active = true;
+        e.hp     = def.maxHp;
         e.pos_x  = e.spawn_x;
         e.pos_y  = e.spawn_y;
         e.state  = EnemyAIState::IDLE;

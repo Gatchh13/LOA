@@ -56,7 +56,7 @@
 
 #include "../../include/types.h"
 #include "Inventory.h"
-#include "../items/ItemDef.h"
+#include "../data/ItemDatabase.h"
 
 // Sentinel for "no item equipped in this slot" — see header comment for
 // why 0xFF rather than 0.

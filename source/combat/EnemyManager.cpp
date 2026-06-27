@@ -178,7 +178,8 @@ void EnemyManager::updateAI(Enemy& e, float playerX, float playerY,
 }
 
 void EnemyManager::update(ZoneID currentZone, float playerX, float playerY,
-                          float dt, const TileMap& map, PlayerState& playerState) {
+                          float dt, const TileMap& map, PlayerState& playerState,
+                          bool playerInvulnerable) {
     for (int i = 0; i < MAX_ENEMIES; i++) {
         Enemy& e = m_enemies[i];
         if (!e.active)             continue;
@@ -199,21 +200,30 @@ void EnemyManager::update(ZoneID currentZone, float playerX, float playerY,
             if (e.attackCooldown <= 0.0f) {
                 e.attackCooldown = ENEMY_ATTACK_INTERVAL;
 
-                const EnemyDef& def = getEnemyDef(e.type);
+                // Milestone 11: skip the damage itself while the player
+                // can't respond (a menu is open). The cooldown above
+                // still resets normally — closing the menu doesn't
+                // grant a free instant bite the moment contact damage
+                // resumes, it just means the wolf's next *real* tick is
+                // a full ENEMY_ATTACK_INTERVAL away, exactly as if this
+                // tick had landed normally.
+                if (!playerInvulnerable) {
+                    const EnemyDef& def = getEnemyDef(e.type);
 
-                // Milestone 9 combat formula: enemy_attack - armor_bonus,
-                // minimum 1. Computed in int to avoid u16 underflow if
-                // defense ever exceeded attack (clamped explicitly below
-                // rather than relying on unsigned wraparound never
-                // happening to line up correctly).
-                int rawDamage = static_cast<int>(def.contactDamage)
-                              - static_cast<int>(playerState.getDefense());
-                u16 dmg = static_cast<u16>(rawDamage < 1 ? 1 : rawDamage);
+                    // Milestone 9 combat formula: enemy_attack - armor_bonus,
+                    // minimum 1. Computed in int to avoid u16 underflow if
+                    // defense ever exceeded attack (clamped explicitly below
+                    // rather than relying on unsigned wraparound never
+                    // happening to line up correctly).
+                    int rawDamage = static_cast<int>(def.contactDamage)
+                                  - static_cast<int>(playerState.getDefense());
+                    u16 dmg = static_cast<u16>(rawDamage < 1 ? 1 : rawDamage);
 
-                playerState.damage(dmg);
-                LOG("Enemy %d (%s) bit the player for %u damage (atk=%u def=%u). Player HP: %u/%u",
-                    e.id, def.name, dmg, def.contactDamage, playerState.getDefense(),
-                    playerState.hp, playerState.maxHp);
+                    playerState.damage(dmg);
+                    LOG("Enemy %d (%s) bit the player for %u damage (atk=%u def=%u). Player HP: %u/%u",
+                        e.id, def.name, dmg, def.contactDamage, playerState.getDefense(),
+                        playerState.hp, playerState.maxHp);
+                }
             }
         }
     }

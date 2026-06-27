@@ -77,5 +77,8 @@ static constexpr QuestDef s_wellRepairDef = {
     /*title=*/     "The Town Well",
     /*steps=*/     s_wellRepairSteps,
     /*step_count=*/3,
-    /*reward=*/    { /*gold=*/ 20, /*item_id=*/ static_cast<u8>(ItemID::IRON_NAIL), /*item_qty=*/ 2 }
+    /*reward=*/    { /*gold=*/ 20, /*item_id=*/ static_cast<u8>(ItemID::IRON_NAIL), /*item_qty=*/ 2 },
+    /*post_complete_dialogue=*/
+        "Well's running smooth again, thanks to you.\n"
+        "Couldn't have fixed it without those nails."
 };

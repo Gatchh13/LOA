@@ -71,8 +71,18 @@ struct QuestReward {
 };
 
 //-----------------------------------------------------------------------------
-// QuestDef — one complete quest definition. quest_id/title/steps/
-// step_count/reward, unchanged shape from Milestone 7-9's QuestDef.h.
+// QuestDef — one complete quest definition.
+//
+// post_complete_dialogue (Milestone 11 — Gameplay Integration): one-line
+// flavor dialogue shown when the player talks to the NPC who was the
+// target of this quest's FINAL step, after the quest has reached
+// COMPLETE. nullptr (the default) means no post-completion line —
+// existing quests are unaffected unless this is explicitly set, so
+// adding this field is purely additive. This reuses the exact same
+// override mechanism QuestStep::npc_dialogue_override already uses
+// (QuestManager::onTalkToNPC returning a string instead of nullptr) —
+// no new dialogue system, no branching, just one more nullable string
+// checked at a lower priority than the active-quest override.
 //-----------------------------------------------------------------------------
 static constexpr int MAX_QUEST_STEPS = 8;
 static constexpr int MAX_QUESTS      = 16;
@@ -85,6 +95,8 @@ struct QuestDef {
     u8                step_count;
 
     QuestReward reward;
+
+    const char* post_complete_dialogue = nullptr;
 };
 
 //-----------------------------------------------------------------------------

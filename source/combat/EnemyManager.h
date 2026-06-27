@@ -61,8 +61,19 @@ public:
     // and in range. Call once per frame with real dt.
     // playerX/Y: player center in pixels. map: for movement collision
     // (Chase/Return use the same tile-solid check as NPCManager::moveNPC).
+    // playerInvulnerable (Milestone 11): true while the player can't
+    // respond — dialogue/shop/inventory screen open. The AI state
+    // machine and the bite-interval cooldown still tick normally (so
+    // nothing desyncs and the wolf doesn't get a free instant bite the
+    // moment the player closes the menu), but the damage itself is
+    // suppressed. Fixes a real fairness bug: previously contact damage
+    // applied unconditionally, so a player standing near an attacking
+    // enemy while talking to a different NPC or browsing the shop took
+    // free damage — and could die — with no way to fight back, heal,
+    // or even see it coming until the menu closed.
     void update(ZoneID currentZone, float playerX, float playerY,
-               float dt, const TileMap& map, PlayerState& playerState);
+               float dt, const TileMap& map, PlayerState& playerState,
+               bool playerInvulnerable);
 
     // Player melee attack. Call when X is pressed. Damages the closest
     // enemy within ATTACK_RANGE_PX of the player's facing direction, on

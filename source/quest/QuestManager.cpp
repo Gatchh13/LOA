@@ -99,21 +99,49 @@ const char* QuestManager::onTalkToNPC(u8 npc_id) {
     m_pendingTalkActive  = true;
 
     int qi = findActiveQuest();
-    if (qi < 0) return nullptr;
+    if (qi >= 0) {
+        const QuestState&  qs  = m_states[qi];
+        const QuestDef&    qd  = getQuestDef(static_cast<u8>(qi));
 
-    const QuestState&  qs  = m_states[qi];
-    const QuestDef&    qd  = getQuestDef(static_cast<u8>(qi));
+        if (qs.current_step < qd.step_count) {
+            const QuestStep& step = qd.steps[qs.current_step];
 
-    if (qs.current_step >= qd.step_count) return nullptr;
-    const QuestStep& step = qd.steps[qs.current_step];
+            // Return dialogue override if this NPC is the target of the
+            // current step.
+            bool npcIsTarget = (step.type == QuestStepType::TALK_TO_NPC ||
+                                step.type == QuestStepType::RETURN_TO_NPC) &&
+                               (step.target_npc_id == npc_id);
 
-    // Return dialogue override if this NPC is the target of the current step.
-    bool npcIsTarget = (step.type == QuestStepType::TALK_TO_NPC ||
-                        step.type == QuestStepType::RETURN_TO_NPC) &&
-                       (step.target_npc_id == npc_id);
+            if (npcIsTarget && step.npc_dialogue_override != nullptr) {
+                return step.npc_dialogue_override;
+            }
+        }
+    }
 
-    if (npcIsTarget && step.npc_dialogue_override != nullptr) {
-        return step.npc_dialogue_override;
+    // Milestone 11: no active-quest override applied. Check whether a
+    // COMPLETED quest's final step targeted this NPC and has flavor
+    // dialogue for after the fact (e.g. Mira commenting on the
+    // delivered package once there's no active quest pointing at her
+    // anymore). Lower priority than an active quest on purpose — if a
+    // second quest later also targets this NPC while it's IN_PROGRESS,
+    // that quest's own current-step override (checked above) always
+    // wins; this is purely a fallback for "nothing is currently asking
+    // anything of this NPC."
+    for (int i = 0; i < getQuestCount(); i++) {
+        const QuestDef& qd = getQuestByIndex(i);
+        if (m_states[qd.quest_id].status != QuestStatus::COMPLETE) continue;
+        if (qd.step_count == 0) continue;
+        if (qd.post_complete_dialogue == nullptr) continue;
+
+        const QuestStep& finalStep = qd.steps[qd.step_count - 1];
+        bool finalStepTargetsThisNPC =
+            (finalStep.type == QuestStepType::TALK_TO_NPC ||
+             finalStep.type == QuestStepType::RETURN_TO_NPC) &&
+            (finalStep.target_npc_id == npc_id);
+
+        if (finalStepTargetsThisNPC) {
+            return qd.post_complete_dialogue;
+        }
     }
 
     return nullptr;

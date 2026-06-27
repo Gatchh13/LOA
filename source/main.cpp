@@ -1,5 +1,22 @@
 //-----------------------------------------------------------------------------
-// main.cpp  (Milestone 9 — Equipment & Character Progression)
+// main.cpp  (Milestone 11 — Gameplay Integration)
+//
+// New over Milestone 9:
+//   - Milestone 10 split item/quest/NPC/enemy definitions into
+//     databases (source/data/, source/quest/data/, etc.) — no gameplay
+//     behavior changed; this file needed zero source changes that
+//     milestone. Also added a second quest, "The Town Well," which
+//     auto-starts when "The Missing Package" completes.
+//   - Milestone 11 (this milestone) is integration/polish, not new
+//     mechanics: NPCs now acknowledge completed quests (see
+//     QuestDef::post_complete_dialogue); fixed a fairness bug where
+//     contact damage applied even while a dialogue/shop/inventory menu
+//     was open, with no way to fight back or heal — enemies.update()
+//     now takes a playerInvulnerable flag tied to the same
+//     interactionSuspended condition that already gates movement and
+//     attacks; death now closes any open menu before respawning,
+//     so the player never lands back in Town still staring at a
+//     dialogue box from wherever they died.
 //
 // New over Milestone 8:
 //   - Selling: Mira now buys items too. The shop's single stock list
@@ -67,7 +84,7 @@ int main() {
     romfsInit();
 
     Logger::init();
-    LOG("Legends of Aetheria — Milestone 6: Foundation of Feel");
+    LOG("Legends of Aetheria — Milestone 11: Gameplay Integration");
 
     Renderer renderer;
     if (!renderer.init()) {
@@ -453,7 +470,7 @@ int main() {
         // the player isn't changing either; this just keeps its animation
         // timer and any in-progress bite-interval honest.
         enemies.update(currentZone, player.getCenterX(), player.getCenterY(),
-                      dt, zones.getTileMap(), playerState);
+                      dt, zones.getTileMap(), playerState, interactionSuspended);
         enemies.updateMessageTimer(dt);
 
         if (!interactionSuspended) {
@@ -487,6 +504,19 @@ int main() {
         if (playerState.isDead()) {
             const ZoneDef&    townDef = getZoneDef(ZoneID::TOWN);
             const SpawnPoint& townSp  = townDef.spawns[0];
+
+            // Milestone 11: close any open menu before respawning.
+            // Previously, dying while talking to an NPC or browsing the
+            // shop/inventory left that screen stuck open after the
+            // respawn teleport — the player would land in Town still
+            // staring at a dialogue box or shop list from wherever they
+            // died. Combined with the contact-damage-suppression fix
+            // above, this should rarely trigger from enemy damage alone
+            // now, but it's the correct standalone behavior regardless
+            // of what caused death.
+            if (npcs.isDialogueOpen()) npcs.closeDialogue();
+            if (shop.isOpen())         shop.close();
+            if (invScreen.isOpen())    invScreen.close();
 
             if (currentZone != ZoneID::TOWN) {
                 zones.forceLoadZone(ZoneID::TOWN, 0);

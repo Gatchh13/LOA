@@ -1,0 +1,1347 @@
+diff --git a/source/combat/Enemy.h b/source/combat/Enemy.h
+index 68c2537..2bcf03a 100644
+--- a/source/combat/Enemy.h
++++ b/source/combat/Enemy.h
+@@ -47,6 +47,35 @@ enum class EnemyAIState : u8 {
+     RETURN = 3,
+ };
+ 
++// Milestone 12, Task 7: combat robustness additions — hit
++// invulnerability, hit-flash preparation, and a minimal knockback hook.
++// All three default to "no effect" (zero timers / zero velocity), so an
++// Enemy that's never been hit behaves identically to before this
++// milestone; these fields only do anything once EnemyManager::tryAttack
++// (or a future caller) sets them.
++static constexpr float HIT_INVULN_DURATION_SEC = 0.2f; // matches the
++    // existing 0.5s player attack cooldown's intent loosely — short
++    // enough that a legitimate fast follow-up hit still lands, long
++    // enough to make a single swing register as exactly one hit even
++    // if tryAttack() were ever called more than once in a frame (it
++    // currently isn't, but this is the kind of invariant worth making
++    // explicit and enforced rather than implicit and merely true today
++    // — see Movement.h's header comment for the same philosophy
++    // applied to knockback below).
++static constexpr float HIT_FLASH_DURATION_SEC  = 0.1f; // how long
++    // hitFlashTimer stays nonzero after a hit, for a future renderer
++    // change to read and tint the sprite — no rendering code reads
++    // this field yet (see Renderer::drawEnemies, unchanged this
++    // milestone); it exists so the data is ready the moment a flash
++    // effect is implemented, without another pass through EnemyManager.
++static constexpr float KNOCKBACK_DECAY_PER_SEC = 600.0f; // pixels/sec^2
++    // equivalent — how fast knockbackVelX/Y bleeds off toward zero.
++    // Not currently applied by anything (no caller sets a nonzero
++    // knockback velocity yet — this is the "hook," not a triggered
++    // effect), but EnemyManager::updateAI() decays and applies it
++    // unconditionally so the field is live infrastructure, not dead
++    // weight waiting for a second pass to wire in.
++
+ struct Enemy {
+     u8        id;
+     EnemyType type;   // which EnemyDef this instance represents — see
+@@ -68,6 +97,13 @@ struct Enemy {
+     EnemyAIState state;
+     float        attackCooldown;  // seconds remaining until next attack tick
+ 
++    // Milestone 12, Task 7 — see the constants above for what each of
++    // these is for. All zero-initialized, all "no effect" until set.
++    float hitInvulnTimer;  // seconds remaining where this enemy can't be hit again
++    float hitFlashTimer;   // seconds remaining to show a hit-flash (rendering not yet wired)
++    float knockbackVelX;   // pixels/second, decays toward 0 via KNOCKBACK_DECAY_PER_SEC
++    float knockbackVelY;
++
+     AnimState anim;   // reused as-is from Milestone 6 — same facing/walk-
+                        // frame struct already used by Player and NPC.
+ 
+diff --git a/source/combat/EnemyManager.cpp b/source/combat/EnemyManager.cpp
+index 0caba32..50908f9 100644
+--- a/source/combat/EnemyManager.cpp
++++ b/source/combat/EnemyManager.cpp
+@@ -3,6 +3,7 @@
+ //-----------------------------------------------------------------------------
+ 
+ #include "EnemyManager.h"
++#include "../core/Movement.h"
+ #include "../data/ItemDatabase.h"
+ #include "../world/SpawnDatabase.h"
+ #include "../core/Logger.h"
+@@ -63,6 +64,10 @@ void EnemyManager::init() {
+         e.hp              = def.maxHp;
+         e.state           = EnemyAIState::IDLE;
+         e.attackCooldown  = 0.0f;
++        e.hitInvulnTimer  = 0.0f;
++        e.hitFlashTimer   = 0.0f;
++        e.knockbackVelX   = 0.0f;
++        e.knockbackVelY   = 0.0f;
+         e.anim            = AnimState{};
+         e.active          = true;
+     }
+@@ -79,43 +84,10 @@ void EnemyManager::init() {
+ // rather than invent movement logic. Returns true if the enemy actually
+ // moved.
+ //-----------------------------------------------------------------------------
+-bool EnemyManager::moveToward(Enemy& e, float targetX, float targetY,
+-                              float dt, const TileMap& map) {
+-    float dx   = targetX - e.pos_x;
+-    float dy   = targetY - e.pos_y;
+-    float dist = sqrtf(dx * dx + dy * dy);
+-    if (dist <= ENEMY_RETURN_THRESHOLD) {
+-        e.anim.update(0.0f, 0.0f, dt);
+-        return false;
+-    }
+-
+-    float step = ENEMY_SPEED * dt;
+-    float velX = 0.0f;
+-    float velY = 0.0f;
+-
+-    if (fabsf(dx) > ENEMY_RETURN_THRESHOLD) {
+-        float moveX = (dx > 0.0f ? 1.0f : -1.0f) * std::min(step, fabsf(dx));
+-        float newX  = e.pos_x + moveX;
+-        int tx = static_cast<int>(newX + 8) / TILE_SIZE;
+-        int ty = static_cast<int>(e.pos_y + 8) / TILE_SIZE;
+-        if (!map.isSolid(tx, ty)) {
+-            e.pos_x = newX;
+-            velX = (dx > 0.0f ? 1.0f : -1.0f) * ENEMY_SPEED;
+-        }
+-    } else if (fabsf(dy) > ENEMY_RETURN_THRESHOLD) {
+-        float moveY = (dy > 0.0f ? 1.0f : -1.0f) * std::min(step, fabsf(dy));
+-        float newY  = e.pos_y + moveY;
+-        int tx = static_cast<int>(e.pos_x + 8) / TILE_SIZE;
+-        int ty = static_cast<int>(newY + 8) / TILE_SIZE;
+-        if (!map.isSolid(tx, ty)) {
+-            e.pos_y = newY;
+-            velY = (dy > 0.0f ? 1.0f : -1.0f) * ENEMY_SPEED;
+-        }
+-    }
+-
+-    e.anim.update(velX, velY, dt);
+-    return true;
+-}
++// moveToward() was removed in Milestone 12 — its logic is now the
++// shared seekTowardTarget() in source/core/Movement.cpp, called
++// directly from updateAI() below with ENEMY_SPEED/ENEMY_RETURN_THRESHOLD
++// passed through unchanged.
+ 
+ //-----------------------------------------------------------------------------
+ // updateAI — Idle -> Chase -> Attack -> Return state machine.
+@@ -126,6 +98,43 @@ bool EnemyManager::moveToward(Enemy& e, float targetX, float targetY,
+ //-----------------------------------------------------------------------------
+ void EnemyManager::updateAI(Enemy& e, float playerX, float playerY,
+                             float dt, const TileMap& map) {
++    // Milestone 12, Task 7: knockback application + decay, and hit-
++    // invuln/hit-flash timer countdown. Runs unconditionally, before
++    // the state-machine switch below, so it applies regardless of
++    // which AI state the enemy is in (a knocked-back enemy mid-CHASE
++    // still gets pushed; an enemy that's just been hit is still briefly
++    // invulnerable whether it's chasing, attacking, or idling).
++    if (e.hitInvulnTimer > 0.0f) {
++        e.hitInvulnTimer -= dt;
++        if (e.hitInvulnTimer < 0.0f) e.hitInvulnTimer = 0.0f;
++    }
++    if (e.hitFlashTimer > 0.0f) {
++        e.hitFlashTimer -= dt;
++        if (e.hitFlashTimer < 0.0f) e.hitFlashTimer = 0.0f;
++    }
++    if (e.knockbackVelX != 0.0f || e.knockbackVelY != 0.0f) {
++        // Apply this frame's displacement directly — knockback is an
++        // external push, not something seekTowardTarget() needs to
++        // know about (see Movement.h's header comment on why this
++        // separation was the design from the start, not an
++        // afterthought). No tile-collision check on the knockback
++        // displacement itself: with KNOCKBACK_DECAY_PER_SEC this fast
++        // and no caller currently setting a nonzero velocity, a real
++        // knockback effect's tuning (and whether it should respect
++        // walls) is exactly the kind of decision deferred to whichever
++        // future milestone actually triggers this hook for the first
++        // time — see the Milestone 12 design doc's "Document Future
++        // Refactors" section.
++        e.pos_x += e.knockbackVelX * dt;
++        e.pos_y += e.knockbackVelY * dt;
++
++        float decay = KNOCKBACK_DECAY_PER_SEC * dt;
++        if (fabsf(e.knockbackVelX) <= decay) e.knockbackVelX = 0.0f;
++        else e.knockbackVelX -= (e.knockbackVelX > 0.0f ? decay : -decay);
++        if (fabsf(e.knockbackVelY) <= decay) e.knockbackVelY = 0.0f;
++        else e.knockbackVelY -= (e.knockbackVelY > 0.0f ? decay : -decay);
++    }
++
+     float dx   = playerX - e.pos_x;
+     float dy   = playerY - e.pos_y;
+     float distToPlayer = sqrtf(dx * dx + dy * dy);
+@@ -145,7 +154,8 @@ void EnemyManager::updateAI(Enemy& e, float playerX, float playerY,
+             } else if (distToPlayer > ENEMY_DETECT_RANGE_PX) {
+                 e.state = EnemyAIState::RETURN;
+             } else {
+-                moveToward(e, playerX, playerY, dt, map);
++                seekTowardTarget(e.pos_x, e.pos_y, playerX, playerY,
++                                 ENEMY_SPEED, ENEMY_RETURN_THRESHOLD, dt, map, e.anim);
+             }
+             break;
+ 
+@@ -165,7 +175,8 @@ void EnemyManager::updateAI(Enemy& e, float playerX, float playerY,
+             break;
+ 
+         case EnemyAIState::RETURN: {
+-            bool stillMoving = moveToward(e, e.spawn_x, e.spawn_y, dt, map);
++            bool stillMoving = seekTowardTarget(e.pos_x, e.pos_y, e.spawn_x, e.spawn_y,
++                                                ENEMY_SPEED, ENEMY_RETURN_THRESHOLD, dt, map, e.anim);
+             if (distToPlayer <= ENEMY_DETECT_RANGE_PX) {
+                 // Player re-entered range while heading home — chase again.
+                 e.state = EnemyAIState::CHASE;
+@@ -239,31 +250,47 @@ AttackResult EnemyManager::tryAttack(float playerX, float playerY, Facing player
+     if (!xPressed) return AttackResult::NONE;
+     if (m_attackCooldownRemaining > 0.0f) return AttackResult::NONE;
+ 
+-    // Facing-direction reach: the attack hitbox is a point offset from
+-    // the player's center in their facing direction, then a closest-
+-    // enemy-in-range check — same closest-wins pattern as
+-    // WorldObjectManager::tryInteract / GatherNodeManager::tryHarvest.
+-    float reachX = playerX;
+-    float reachY = playerY;
++    // Milestone 12, Task 7: directional attack cone, replacing the
++    // previous point-offset+radius check. An enemy must be within
++    // ATTACK_RANGE_PX of the player's actual center AND within
++    // ATTACK_CONE_HALF_ANGLE_DEG of the player's facing direction.
++    // Same closest-wins pattern as before (WorldObjectManager::
++    // tryInteract / GatherNodeManager::tryHarvest) for picking among
++    // multiple candidates in range.
++    float facingDirX = 0.0f, facingDirY = 0.0f;
+     switch (playerFacing) {
+-        case Facing::UP:    reachY -= ATTACK_RANGE_PX; break;
+-        case Facing::DOWN:  reachY += ATTACK_RANGE_PX; break;
+-        case Facing::LEFT:  reachX -= ATTACK_RANGE_PX; break;
+-        case Facing::RIGHT: reachX += ATTACK_RANGE_PX; break;
++        case Facing::UP:    facingDirX =  0.0f; facingDirY = -1.0f; break;
++        case Facing::DOWN:  facingDirX =  0.0f; facingDirY =  1.0f; break;
++        case Facing::LEFT:  facingDirX = -1.0f; facingDirY =  0.0f; break;
++        case Facing::RIGHT: facingDirX =  1.0f; facingDirY =  0.0f; break;
+     }
++    float coneHalfAngleRad = ATTACK_CONE_HALF_ANGLE_DEG * (3.14159265f / 180.0f);
++    float cosConeHalfAngle = cosf(coneHalfAngleRad);
+ 
+     float closest = ATTACK_RANGE_PX;
+     int   bestIdx  = -1;
+     for (int i = 0; i < MAX_ENEMIES; i++) {
+         Enemy& e = m_enemies[i];
+-        if (!e.active) continue;
+-        float dx   = reachX - e.pos_x;
+-        float dy   = reachY - e.pos_y;
++        if (!e.active)            continue;
++        if (e.hitInvulnTimer > 0.0f) continue; // Task 7: can't be hit again yet
++
++        float dx   = e.pos_x - playerX;
++        float dy   = e.pos_y - playerY;
+         float dist = sqrtf(dx * dx + dy * dy);
+-        if (dist <= closest) {
+-            closest = dist;
+-            bestIdx = i;
++        if (dist > closest) continue;
++        if (dist < 0.001f) {
++            // Enemy is essentially on top of the player — no direction
++            // to compare against the facing cone, treat as in-cone
++            // rather than dividing by ~zero.
++        } else {
++            float dirX = dx / dist;
++            float dirY = dy / dist;
++            float dot  = dirX * facingDirX + dirY * facingDirY; // cos(angle between)
++            if (dot < cosConeHalfAngle) continue; // outside the cone
+         }
++
++        closest = dist;
++        bestIdx = i;
+     }
+ 
+     m_attackCooldownRemaining = ATTACK_COOLDOWN_SEC;
+@@ -281,6 +308,14 @@ AttackResult EnemyManager::tryAttack(float playerX, float playerY, Facing player
+     u16 dmg = playerState.getAttack();
+     e.hp = (dmg >= e.hp) ? 0 : static_cast<u16>(e.hp - dmg);
+ 
++    // Milestone 12, Task 7: start the hit-invuln and hit-flash windows.
++    // Set unconditionally on any successful hit (including a killing
++    // blow — the enemy deactivates immediately below regardless, so
++    // these timers are simply irrelevant for a dead enemy rather than
++    // needing a special case to skip them).
++    e.hitInvulnTimer = HIT_INVULN_DURATION_SEC;
++    e.hitFlashTimer  = HIT_FLASH_DURATION_SEC;
++
+     LOG("Player hit enemy %d (%s) for %u damage (atk=%u). Enemy HP: %u/%u",
+         e.id, def.name, dmg, playerState.getAttack(), e.hp, def.maxHp);
+ 
+@@ -341,6 +376,10 @@ void EnemyManager::respawnAll() {
+         e.pos_y  = e.spawn_y;
+         e.state  = EnemyAIState::IDLE;
+         e.attackCooldown = 0.0f;
++        e.hitInvulnTimer = 0.0f;
++        e.hitFlashTimer  = 0.0f;
++        e.knockbackVelX  = 0.0f;
++        e.knockbackVelY  = 0.0f;
+     }
+     LOG("EnemyManager: all enemies respawned at full HP");
+ }
+diff --git a/source/combat/EnemyManager.h b/source/combat/EnemyManager.h
+index 6b2fc7f..0bf4b85 100644
+--- a/source/combat/EnemyManager.h
++++ b/source/combat/EnemyManager.h
+@@ -27,13 +27,25 @@
+ 
+ #include "../../include/types.h"
+ #include "Enemy.h"
+-#include "../quest/PlayerState.h"
++#include "../player/PlayerState.h"
+ #include "../world/TileMap.h"
+ 
+ // Player-facing combat tuning constants. Kept here (not in Enemy.h)
+ // since they describe the player's attack, not enemy data.
+ static constexpr float ATTACK_RANGE_PX     = 20.0f;  // melee reach from player center
+ static constexpr float ATTACK_COOLDOWN_SEC = 0.5f;   // time between player attacks
++// Milestone 12, Task 7: directional attack cone half-angle in degrees.
++// 60 degrees half-angle (120 total) — generous enough that a player
++// who's roughly facing an enemy still hits it without needing pixel-
++// perfect aim, but narrow enough to exclude something directly beside
++// or behind the player. Replaces the previous "point offset + radius"
++// check (see tryAttack()'s header comment for why that wasn't
++// necessarily exploitable in practice, but was geometrically a
++// different shape than "what's in front of me" — this makes the
++// intent explicit and angle-based rather than implicit and distance-
++// based, which is more correct in general even where the old numbers
++// didn't expose a visible problem).
++static constexpr float ATTACK_CONE_HALF_ANGLE_DEG = 60.0f;
+ // Milestone 9: player damage is now PlayerState::getAttack() (base +
+ // weapon bonus), not a flat constant — see EnemyManager.cpp::tryAttack().
+ // The old PLAYER_ATTACK_DAMAGE constant is gone rather than left unused
+@@ -71,19 +83,53 @@ public:
+     // enemy while talking to a different NPC or browsing the shop took
+     // free damage — and could die — with no way to fight back, heal,
+     // or even see it coming until the menu closed.
++    //
++    // IMPORTANT (Milestone 12, Task 7): this function decays every
++    // active enemy's hitInvulnTimer/hitFlashTimer/knockback (via
++    // updateAI(), called once per enemy here). tryAttack() reads
++    // hitInvulnTimer to gate hits but does NOT decay it — by design,
++    // to avoid two functions independently decrementing the same timer
++    // (a real double-decrement risk if both ever ran in the same frame,
++    // which they do in normal gameplay). This means update() and
++    // tryAttack() must both be called every frame for hit-invuln to
++    // behave correctly — true in actual gameplay (see Gameplay.cpp,
++    // which calls both unconditionally each frame) but worth stating
++    // explicitly: calling tryAttack() repeatedly WITHOUT calling
++    // update() in between will make every hit after the first appear
++    // to silently miss, since hitInvulnTimer never gets a chance to
++    // count down. (Caught by this milestone's own test suite, which
++    // initially made exactly this mistake.)
+     void update(ZoneID currentZone, float playerX, float playerY,
+                float dt, const TileMap& map, PlayerState& playerState,
+                bool playerInvulnerable);
+ 
+     // Player melee attack. Call when X is pressed. Damages the closest
+-    // enemy within ATTACK_RANGE_PX of the player's facing direction, on
+-    // a cooldown. Grants loot directly to playerState's inventory if the
+-    // hit kills the enemy (see Enemy::lootItemId) — same "the function
+-    // that causes the state change also grants the consequence" pattern
+-    // as WorldObjectManager::repair() consuming resources inline.
++    // enemy within ATTACK_RANGE_PX AND within ATTACK_CONE_HALF_ANGLE_DEG
++    // of the player's facing direction (Milestone 12, Task 7 — a true
++    // directional cone, not a point-offset+radius check), on a
++    // cooldown, skipping any enemy still within its post-hit
++    // hitInvulnTimer window. Grants loot directly to playerState's
++    // inventory if the hit kills the enemy (see Enemy::lootItemId) —
++    // same "the function that causes the state change also grants the
++    // consequence" pattern as WorldObjectManager::repair() consuming
++    // resources inline.
+     AttackResult tryAttack(float playerX, float playerY, Facing playerFacing,
+                            bool xPressed, float dt, PlayerState& playerState);
+ 
++    // Milestone 12, Task 7 — knockback hook. Sets enemyIndex's
++    // knockbackVelX/Y directly; EnemyManager::updateAI() applies and
++    // decays it every frame regardless of AI state (see Enemy.h's
++    // KNOCKBACK_DECAY_PER_SEC). No current caller invokes this — it
++    // exists so a future feature (a charged attack, a specific weapon,
++    // a status effect) can push an enemy without needing another pass
++    // through EnemyManager to wire the application/decay logic, which
++    // already exists and is already exercised every frame.
++    void applyKnockback(int enemyIndex, float velX, float velY) {
++        if (enemyIndex < 0 || enemyIndex >= MAX_ENEMIES) return;
++        m_enemies[enemyIndex].knockbackVelX = velX;
++        m_enemies[enemyIndex].knockbackVelY = velY;
++    }
++
+     // The message from the last tryAttack/contact-damage event (for HUD
+     // display) — same message+timer pattern as WorldObjectManager/
+     // GatherNodeManager.
+@@ -112,7 +158,12 @@ private:
+ 
+     char m_messageBuf[40];
+ 
+-    // AI helpers — internal, mirror NPCManager::moveNPC's step pattern.
++    // AI state machine — Idle/Chase/Attack/Return transitions.
+     void updateAI(Enemy& e, float playerX, float playerY, float dt, const TileMap& map);
+-    bool moveToward(Enemy& e, float targetX, float targetY, float dt, const TileMap& map);
++
++    // Move toward a target point is now handled by the shared
++    // seekTowardTarget() (source/core/Movement.h) — see updateAI()'s
++    // call sites. The old private moveToward() method, which
++    // duplicated NPCManager::moveNPC()'s logic exactly, was removed in
++    // Milestone 12.
+ };
+diff --git a/source/main.cpp b/source/main.cpp
+index 96d1443..25a05fa 100644
+--- a/source/main.cpp
++++ b/source/main.cpp
+@@ -1,42 +1,30 @@
+ //-----------------------------------------------------------------------------
+-// main.cpp  (Milestone 11 — Gameplay Integration)
++// main.cpp  (Milestone 12 — Engine Cleanup & Architecture Consolidation)
+ //
+-// New over Milestone 9:
+-//   - Milestone 10 split item/quest/NPC/enemy definitions into
+-//     databases (source/data/, source/quest/data/, etc.) — no gameplay
+-//     behavior changed; this file needed zero source changes that
+-//     milestone. Also added a second quest, "The Town Well," which
+-//     auto-starts when "The Missing Package" completes.
+-//   - Milestone 11 (this milestone) is integration/polish, not new
+-//     mechanics: NPCs now acknowledge completed quests (see
+-//     QuestDef::post_complete_dialogue); fixed a fairness bug where
+-//     contact damage applied even while a dialogue/shop/inventory menu
+-//     was open, with no way to fight back or heal — enemies.update()
+-//     now takes a playerInvulnerable flag tied to the same
+-//     interactionSuspended condition that already gates movement and
+-//     attacks; death now closes any open menu before respawning,
+-//     so the player never lands back in Town still staring at a
+-//     dialogue box from wherever they died.
++// Milestone 12 extracted all gameplay-specific state and update/render
++// logic into source/core/Gameplay.{h,cpp} — every line of logic that
++// used to live in this file's while(aptMainLoop()) body moved there
++// verbatim (see Gameplay.cpp's header comment). main.cpp now owns only
++// what genuinely isn't gameplay-specific: Clock (needed by the title
++// screen too), InputManager, Renderer, StateManager, TitleScreen — and
++// its job is reduced to initialization, the main loop's dispatch
++// between TitleScreen and Gameplay, and shutdown. No behavior changed;
++// only where the code lives.
+ //
+-// New over Milestone 8:
+-//   - Selling: Mira now buys items too. The shop's single stock list
+-//     (ShopUI, unchanged shape) grew to include sellable-but-not-
+-//     buyable items (Wolf Pelt); A buys the item under the cursor, X
+-//     sells one of it from the inventory. 50% of buy price, no new
+-//     shop state.
+-//   - Equipment: two slots (weapon, armor) on PlayerState. Three new
+-//     items (Wooden Sword, Leather Armor, Iron Sword), all purchasable.
+-//     START opens a minimal text-only inventory screen (cursor + A to
+-//     equip/unequip + B to exit) — this replaces the Milestone 8
+-//     in-gameplay "press START to reload" feature, since every other
+-//     button is now claimed; Continue from the title screen remains
+-//     the only load path.
+-//   - Combat formula now includes equipment: player damage = base
+-//     attack + weapon bonus; enemy contact damage = enemy attack -
+-//     armor bonus (minimum 1).
+-//   - HUD gained an Attack/Defense line (text only, no new panel).
+-//   - The Missing Package quest now rewards a Wooden Sword instead of
+-//     Mira's Token, proving the quest -> equipment path.
++// Previous milestones' changelog (kept for history — see each
++// milestone's own design doc for full detail):
++//   M11: NPCs acknowledge completed quests; fixed a fairness bug where
++//        contact damage applied while a menu was open with no way to
++//        respond; death now closes any open menu before respawning.
++//   M10: item/quest/NPC/enemy definitions split into databases
++//        (source/data/, source/quest/data/, etc.); added a second
++//        quest, "The Town Well."
++//   M9:  Selling, equipment (weapon/armor slots, 3 new items), the
++//        inventory/equip screen (START), attack/defense HUD line.
++//   M8:  HP, the Forest Wolf (Idle/Chase/Attack/Return AI), melee
++//        attack (X), consumables (L/R), death/respawn.
++//   M7:  Inventory, the shop (Y while talking to Mira), quest item
++//        rewards.
+ //
+ // Button map (gameplay):
+ //   D-Pad / Circle Pad : move
+@@ -61,30 +49,18 @@
+ 
+ #include "core/Logger.h"
+ #include "core/Clock.h"
+-#include "core/WorldClock.h"
+ #include "core/GameState.h"
+ #include "core/TitleScreen.h"
++#include "core/Gameplay.h"
+ #include "input/InputManager.h"
+-#include "world/ZoneManager.h"
+-#include "world/DayNight.h"
+-#include "world/WorldObjectManager.h"
+-#include "world/GatherNodeManager.h"
+-#include "world/Shop.h"
+-#include "combat/EnemyManager.h"
+-#include "quest/InventoryScreen.h"
+-#include "render/Camera.h"
+ #include "render/Renderer.h"
+-#include "entities/Player.h"
+-#include "npc/NPCManager.h"
+-#include "quest/QuestManager.h"
+-#include "quest/PlayerState.h"
+ #include "save/SaveManager.h"
+ 
+ int main() {
+     romfsInit();
+ 
+     Logger::init();
+-    LOG("Legends of Aetheria — Milestone 11: Gameplay Integration");
++    LOG("Legends of Aetheria — Milestone 12: Engine Cleanup & Architecture Consolidation");
+ 
+     Renderer renderer;
+     if (!renderer.init()) {
+@@ -94,116 +70,13 @@ int main() {
+     }
+ 
+     Clock        clock;
+-    WorldClock   worldClock(8 * 60);   // default start: 08:00
+-    DayNight     dayNight;
+     InputManager input;
+ 
+-    //--------------------------------------------------------------------------
+-    // Systems — constructed in dependency order.
+-    // Player has no default constructor (position is required), so it's
+-    // constructed here with a placeholder that startGame() below always
+-    // overwrites before gameplay actually begins — same pattern as
+-    // ZoneManager/NPCManager/WorldObjectManager, which are default-
+-    // constructed and only meaningfully set up via their own init() calls.
+-    //--------------------------------------------------------------------------
+-    PlayerState        playerState;
+-    QuestManager       questMgr;
+-
+-    ZoneManager        zones;
+-    NPCManager         npcs;
+-    WorldObjectManager worldObjects;
+-    GatherNodeManager  gatherNodes;
+-    EnemyManager       enemies;
+-    ShopUI             shop;
+-    InventoryScreen    invScreen;
+-    Player             player(0.0f, 0.0f);
+-    Camera              camera;
+-
++    Gameplay     gameplay;
+     StateManager state;       // starts at GameState::BOOT
+     TitleScreen  titleScreen;
+ 
+-    float timeAccum   = 0.0f;
+-
+-    // Status message state (save/load notification)
+-    const char* statusMessage = nullptr;
+-    float       statusTimer   = 0.0f;
+-    static constexpr float STATUS_DURATION = 3.0f;
+-
+-    // Shop feedback message state (purchase result) — same pattern as
+-    // statusMessage above, scoped separately since it's shown inside the
+-    // shop panel rather than as a top-screen banner.
+-    const char* shopMessage      = nullptr;
+-    float       shopMessageTimer = 0.0f;
+-    static constexpr float SHOP_MESSAGE_DURATION = 2.0f;
+-
+-    // Combat feedback message state (attack/consumable results,
+-    // Milestone 8) — same message+timer pattern as everything else in
+-    // this file, shown via drawStatusMessage like the save/load banner.
+-    const char* combatMessage      = nullptr;
+-    float       combatMessageTimer = 0.0f;
+-    static constexpr float COMBAT_MESSAGE_DURATION = 2.0f;
+-
+-    // Inventory screen feedback message (equip/unequip results,
+-    // Milestone 9) — same message+timer pattern, shown as a top-screen
+-    // banner via drawStatusMessage rather than inside the inventory
+-    // panel itself, since equip/unequip is a quick confirm-and-continue
+-    // action, not something that needs its own dedicated message slot
+-    // inside the list (unlike the shop, where the message sits next to
+-    // the transaction that caused it).
+-    const char* invMessage      = nullptr;
+-    float       invMessageTimer = 0.0f;
+-    static constexpr float INV_MESSAGE_DURATION = 2.0f;
+-
+-    //--------------------------------------------------------------------------
+-    // startGame — runs once, when the player picks New Game or Continue on
+-    // the title screen. Everything in here used to run unconditionally
+-    // before the main loop in Milestone 5; it's now deferred so the title
+-    // screen can be shown first without touching any gameplay system.
+-    //--------------------------------------------------------------------------
+-    auto startGame = [&](bool loadExisting) {
+-        bool loadedSave = false;
+-
+-        // Pre-initialize zones so the TileMap exists before loadGame writes to it.
+-        zones.loadZone(ZoneID::TOWN, 0);
+-        worldObjects.init(zones.getTileMap());
+-        gatherNodes.init();
+-        enemies.init();
+-        questMgr.init();
+-
+-        // Determine start position
+-        const ZoneDef&    startDef = getZoneDef(ZoneID::TOWN);
+-        const SpawnPoint& startSp  = startDef.spawns[0];
+-        player.setPosition(startSp.spawn_px, startSp.spawn_py);
+-
+-        if (loadExisting && SaveManager::hasSave()) {
+-            loadedSave = SaveManager::loadGame(
+-                player, zones, worldClock, playerState,
+-                questMgr, worldObjects, zones.getTileMap());
+-            if (loadedSave) {
+-                // SaveManager::apply() already applied world object overrides
+-                // for the loaded zone (load zone -> restore states -> onZoneLoaded).
+-                npcs.init(worldClock.getTotalMinutes());
+-                LOG("Save loaded successfully");
+-            } else {
+-                WARN("Save validation failed — starting new game");
+-            }
+-        }
+-
+-        if (!loadedSave) {
+-            // Fresh new game
+-            playerState.init();
+-            npcs.init(worldClock.getTotalMinutes());
+-            LOG("New game started");
+-        }
+-
+-        camera.update(player.getCenterX(), player.getCenterY(),
+-                      zones.getTileMap().getWidthPixels(),
+-                      zones.getTileMap().getHeightPixels());
+-
+-        dayNight.update(worldClock.getTimeAsFloat());
+-
+-        state.push(GameState::GAMEPLAY);
+-    };
++    float timeAccum = 0.0f;
+ 
+     titleScreen.enter(SaveManager::hasSave());
+     state.push(GameState::TITLE_SCREEN);
+@@ -226,9 +99,11 @@ int main() {
+         if (state.is(GameState::TITLE_SCREEN)) {
+             TitleResult result = titleScreen.update(input);
+             if (result == TitleResult::START_NEW) {
+-                startGame(/*loadExisting=*/false);
++                gameplay.startGame(/*loadExisting=*/false);
++                state.push(GameState::GAMEPLAY);
+             } else if (result == TitleResult::START_LOAD) {
+-                startGame(/*loadExisting=*/true);
++                gameplay.startGame(/*loadExisting=*/true);
++                state.push(GameState::GAMEPLAY);
+             }
+ 
+             renderer.beginFrame(C2D_Color32(18, 22, 34, 255));
+@@ -244,411 +119,8 @@ int main() {
+         //----------------------------------------------------------------------
+         // Gameplay
+         //----------------------------------------------------------------------
+-        bool aPressed      = input.isPressed(KEY_A);
+-        bool bPressed      = input.isPressed(KEY_B);
+-        bool yPressed      = input.isPressed(KEY_Y);
+-        bool xPressed      = input.isPressed(KEY_X);
+-        bool lPressed      = input.isPressed(KEY_L);
+-        bool rPressed      = input.isPressed(KEY_R);
+-        bool selectPressed = input.isPressed(KEY_SELECT);
+-        bool startPressed  = input.isPressed(KEY_START);
+-
+-        //----------------------------------------------------------------------
+-        // Save (SELECT). START opens the inventory screen — see below,
+-        // after shop/dialogue state is known, since opening it is itself
+-        // a state change that should be checked alongside those.
+-        //
+-        // Milestone 8 had an in-gameplay "press START to reload your
+-        // last save without quitting" feature here. It's removed in
+-        // Milestone 9: every other button is now claimed (X=attack,
+-        // L/R=consumables, Y=shop-trigger, A=interact/buy, B=close/
+-        // leave), and START is the assignment's explicit choice for
+-        // opening the inventory screen. Continue from the title screen
+-        // remains the only load path — a deliberate scope decision, not
+-        // an oversight (see the Milestone 9 design doc's risk section).
+-        //----------------------------------------------------------------------
+-        if (selectPressed) {
+-            bool ok = SaveManager::saveGame(
+-                player, zones, worldClock,
+-                playerState, questMgr, worldObjects);
+-            statusMessage = ok ? "Game Saved." : "Save Failed!";
+-            statusTimer   = STATUS_DURATION;
+-            LOG("Save triggered: %s", statusMessage);
+-        }
+-
+-        //----------------------------------------------------------------------
+-        // Update
+-        //----------------------------------------------------------------------
+-        statusTimer      = statusTimer > 0.0f ? statusTimer - dt : 0.0f;
+-        shopMessageTimer = shopMessageTimer > 0.0f ? shopMessageTimer - dt : 0.0f;
+-        invMessageTimer  = invMessageTimer > 0.0f ? invMessageTimer - dt : 0.0f;
+-
+-        worldClock.update(dt);
+-        dayNight.update(worldClock.getTimeAsFloat());
+-        worldObjects.updateMessageTimer(dt);
+-        gatherNodes.update(dt);
+-        gatherNodes.updateMessageTimer(dt);
+-
+-        ZoneID currentZone = zones.getCurrentZoneDef().id;
+-
+-        // Open the shop: Y while talking to Mira specifically. Checked
+-        // before the B-close-dialogue handling below so the same frame
+-        // that opens the shop doesn't also immediately process a B press
+-        // meant for something else.
+-        if (yPressed && !shop.isOpen() && npcs.isDialogueOpen() &&
+-            npcs.isTalkingToMerchant())
+-        {
+-            npcs.closeDialogue();
+-            shop.open();
+-            shopMessage      = nullptr;
+-            shopMessageTimer = 0.0f;
+-            LOG("Shop opened");
+-        }
+-
+-        if (shop.isOpen()) {
+-            // Shop has exclusive input while open: no movement, no
+-            // dialogue, no world object/gather/NPC interaction this
+-            // frame. Mirrors how dialogue already suspends movement via
+-            // `canMove` below, just for the shop's own input set.
+-            if (input.isPressed(KEY_DOWN)) shop.moveCursor(+1);
+-            if (input.isPressed(KEY_UP))   shop.moveCursor(-1);
+-
+-            if (aPressed) {
+-                ShopResult result = shop.tryBuy(playerState);
+-                switch (result) {
+-                    case ShopResult::PURCHASED:
+-                        shopMessage = "Purchased!";
+-                        break;
+-                    case ShopResult::NOT_ENOUGH_GOLD:
+-                        shopMessage = "Not enough gold.";
+-                        break;
+-                    case ShopResult::INVENTORY_FULL:
+-                        shopMessage = "Inventory full.";
+-                        break;
+-                    case ShopResult::NOT_BUYABLE:
+-                        shopMessage = "Not for sale.";
+-                        break;
+-                    case ShopResult::NONE:
+-                    case ShopResult::SOLD:
+-                    case ShopResult::NOT_SELLABLE:
+-                    case ShopResult::NOTHING_TO_SELL:
+-                    default:
+-                        shopMessage = nullptr;
+-                        break;
+-                }
+-                shopMessageTimer = SHOP_MESSAGE_DURATION;
+-            }
+-
+-            // Sell (Milestone 9, Feature 1). X is the player's attack
+-            // button during normal gameplay, but attack input is
+-            // already gated off while the shop is open (see
+-            // `interactionSuspended` below), so there's no conflict
+-            // reusing it here for sell, exactly as the assignment
+-            // prefers ("A = Buy, X = Sell while inside the shop").
+-            if (xPressed) {
+-                ShopResult result = shop.trySell(playerState);
+-                switch (result) {
+-                    case ShopResult::SOLD:
+-                        shopMessage = "Sold!";
+-                        break;
+-                    case ShopResult::NOTHING_TO_SELL:
+-                        shopMessage = "You don't have one.";
+-                        break;
+-                    case ShopResult::NOT_SELLABLE:
+-                        shopMessage = "Mira won't buy that.";
+-                        break;
+-                    case ShopResult::NONE:
+-                    case ShopResult::PURCHASED:
+-                    case ShopResult::NOT_ENOUGH_GOLD:
+-                    case ShopResult::INVENTORY_FULL:
+-                    case ShopResult::NOT_BUYABLE:
+-                    default:
+-                        shopMessage = nullptr;
+-                        break;
+-                }
+-                shopMessageTimer = SHOP_MESSAGE_DURATION;
+-            }
+-
+-            if (bPressed) {
+-                shop.close();
+-                LOG("Shop closed");
+-            }
+-        }
+-
+-        // Open the inventory/equip screen: START, from normal gameplay
+-        // (Milestone 9, Feature 4). Suspended while talking, shopping,
+-        // or already in the inventory screen — the same "one panel at a
+-        // time" rule the shop already follows relative to dialogue.
+-        if (startPressed && !invScreen.isOpen() && !shop.isOpen() && !npcs.isDialogueOpen()) {
+-            invScreen.open();
+-            invMessage      = nullptr;
+-            invMessageTimer = 0.0f;
+-            LOG("Inventory screen opened");
+-        }
+-
+-        if (invScreen.isOpen()) {
+-            if (input.isPressed(KEY_DOWN)) invScreen.moveCursor(+1);
+-            if (input.isPressed(KEY_UP))   invScreen.moveCursor(-1);
+-
+-            if (aPressed) {
+-                InventoryAction result = invScreen.tryActivate(playerState);
+-                switch (result) {
+-                    case InventoryAction::EQUIPPED:
+-                        invMessage = "Equipped.";
+-                        break;
+-                    case InventoryAction::UNEQUIPPED:
+-                        invMessage = "Unequipped.";
+-                        break;
+-                    case InventoryAction::NONE:
+-                    default:
+-                        invMessage = nullptr;
+-                        break;
+-                }
+-                invMessageTimer = INV_MESSAGE_DURATION;
+-            }
+-
+-            if (bPressed) {
+-                invScreen.close();
+-                LOG("Inventory screen closed");
+-            }
+-        }
+-
+-        if (bPressed && npcs.isDialogueOpen()) {
+-            npcs.closeDialogue();
+-        }
+-
+-        bool canMove = (zones.getFadeAlpha() < 1.0f) && !npcs.isDialogueOpen()
+-                      && !shop.isOpen() && !invScreen.isOpen();
+-        if (canMove) {
+-            Vec2 axis = input.getMovementAxis();
+-            player.update(axis, dt, zones.getTileMap());
+-        }
+-
+-        // A-button priority: dialogue close → world object → gather node → NPC
+-        // Skipped entirely while the shop or inventory screen is open —
+-        // their A press was already consumed by shop.tryBuy() or
+-        // invScreen.tryActivate() above.
+-        bool aConsumed = shop.isOpen() || invScreen.isOpen();
+-
+-        if (!aConsumed && npcs.isDialogueOpen() && aPressed) {
+-            npcs.tryInteract(player.getCenterX(), player.getCenterY(),
+-                             aPressed, questMgr, playerState);
+-            aConsumed = true;
+-        }
+-
+-        if (!aConsumed) {
+-            InteractResult result = worldObjects.tryInteract(
+-                player.getCenterX(), player.getCenterY(),
+-                aPressed, zones.getTileMap(), playerState, &questMgr);
+-            if (result != InteractResult::NONE) aConsumed = true;
+-        }
+-
+-        if (!aConsumed) {
+-            GatherResult gatherResult = gatherNodes.tryHarvest(
+-                player.getCenterX(), player.getCenterY(),
+-                currentZone, aPressed, playerState);
+-            if (gatherResult != GatherResult::NONE) aConsumed = true;
+-        }
+-
+-        if (!aConsumed) {
+-            npcs.tryInteract(player.getCenterX(), player.getCenterY(),
+-                             aPressed, questMgr, playerState);
+-        }
+-
+-        //----------------------------------------------------------------------
+-        // Combat (Milestone 8) — suspended while talking or shopping,
+-        // exactly like movement (`canMove` above already excludes both).
+-        //----------------------------------------------------------------------
+-        combatMessageTimer = combatMessageTimer > 0.0f ? combatMessageTimer - dt : 0.0f;
+-
+-        bool interactionSuspended = npcs.isDialogueOpen() || shop.isOpen() || invScreen.isOpen();
+-
+-        // Enemy AI/contact-damage always ticks — an enemy mid-bite
+-        // shouldn't freeze just because a menu opened elsewhere. This is
+-        // harmless even while suspended: the player's position is also
+-        // frozen via `canMove` above, so a suspended enemy's distance to
+-        // the player isn't changing either; this just keeps its animation
+-        // timer and any in-progress bite-interval honest.
+-        enemies.update(currentZone, player.getCenterX(), player.getCenterY(),
+-                      dt, zones.getTileMap(), playerState, interactionSuspended);
+-        enemies.updateMessageTimer(dt);
+-
+-        if (!interactionSuspended) {
+-            AttackResult atkResult = enemies.tryAttack(
+-                player.getCenterX(), player.getCenterY(),
+-                player.getFacing(), xPressed, dt, playerState);
+-            if (atkResult == AttackResult::KILLED) {
+-                combatMessage      = enemies.getLastMessage();
+-                combatMessageTimer = COMBAT_MESSAGE_DURATION;
+-            }
+-
+-            // Consumables: L = Healing Herb, R = Simple Potion. Dedicated
+-            // keys, no menu screen at all — the simplest implementation
+-            // that satisfies "no inventory menus if avoidable" literally.
+-            if (lPressed) {
+-                bool used = playerState.useConsumable(static_cast<u8>(ItemID::HEALING_HERB));
+-                combatMessage      = used ? "Used Healing Herb. +20 HP" : "No Healing Herb.";
+-                combatMessageTimer = COMBAT_MESSAGE_DURATION;
+-            }
+-            if (rPressed) {
+-                bool used = playerState.useConsumable(static_cast<u8>(ItemID::SIMPLE_POTION));
+-                combatMessage      = used ? "Used Simple Potion. +50 HP" : "No Simple Potion.";
+-                combatMessageTimer = COMBAT_MESSAGE_DURATION;
+-            }
+-        }
+-
+-        // Death/respawn (Feature 8). Checked once per frame, after all
+-        // of this frame's damage sources (enemy contact damage above)
+-        // have been applied — so a killing blow and the respawn it
+-        // triggers always happen within the same frame, never delayed.
+-        if (playerState.isDead()) {
+-            const ZoneDef&    townDef = getZoneDef(ZoneID::TOWN);
+-            const SpawnPoint& townSp  = townDef.spawns[0];
+-
+-            // Milestone 11: close any open menu before respawning.
+-            // Previously, dying while talking to an NPC or browsing the
+-            // shop/inventory left that screen stuck open after the
+-            // respawn teleport — the player would land in Town still
+-            // staring at a dialogue box or shop list from wherever they
+-            // died. Combined with the contact-damage-suppression fix
+-            // above, this should rarely trigger from enemy damage alone
+-            // now, but it's the correct standalone behavior regardless
+-            // of what caused death.
+-            if (npcs.isDialogueOpen()) npcs.closeDialogue();
+-            if (shop.isOpen())         shop.close();
+-            if (invScreen.isOpen())    invScreen.close();
+-
+-            if (currentZone != ZoneID::TOWN) {
+-                zones.forceLoadZone(ZoneID::TOWN, 0);
+-                worldObjects.onZoneLoaded(ZoneID::TOWN, zones.getTileMap());
+-                currentZone = ZoneID::TOWN;
+-            }
+-            player.setPosition(townSp.spawn_px, townSp.spawn_py);
+-            playerState.hp = playerState.maxHp;
+-
+-            // Small gold loss on death, per the assignment's optional
+-            // suggestion — discourages treating death as a non-event
+-            // without it being punishing enough to need a real penalty
+-            // system (no equipment durability, no item loss — just a
+-            // flat, small, clamped-at-0 gold cost).
+-            constexpr u32 DEATH_GOLD_LOSS = 5;
+-            playerState.gold = (playerState.gold > DEATH_GOLD_LOSS)
+-                              ? playerState.gold - DEATH_GOLD_LOSS : 0;
+-
+-            enemies.respawnAll();
+-
+-            combatMessage      = "You were defeated. Returned to Town.";
+-            combatMessageTimer = COMBAT_MESSAGE_DURATION;
+-            LOG("Player died — respawned at Town, lost %u gold, all enemies respawned",
+-                DEATH_GOLD_LOSS);
+-        }
+-
+-        questMgr.update(currentZone, player.getCenterX(), player.getCenterY());
+-
+-        npcs.update(currentZone,
+-                    worldClock.getTotalMinutes(),
+-                    worldClock.hourJustChanged(),
+-                    zones.getTileMap(),
+-                    dt);
+-
+-        if (!npcs.isDialogueOpen()) {
+-            zones.update(player.getCenterTileX(), player.getCenterTileY(), dt);
+-        }
+-
+-        if (zones.transitionReady()) {
+-            const SpawnPoint& sp = zones.getPendingSpawn();
+-            player.setPosition(sp.spawn_px, sp.spawn_py);
+-            zones.commitTransition();
+-            worldObjects.onZoneLoaded(zones.getCurrentZoneDef().id,
+-                                      zones.getTileMap());
+-        }
+-
+-        camera.update(player.getCenterX(), player.getCenterY(),
+-                      zones.getTileMap().getWidthPixels(),
+-                      zones.getTileMap().getHeightPixels());
+-
+-        //----------------------------------------------------------------------
+-        // Render
+-        //----------------------------------------------------------------------
+-        renderer.beginFrame(zones.getTileMap().getBgColor());
+-
+-        renderer.drawTileMap(zones.getTileMap(), camera);
+-
+-        renderer.drawWorldObjects(worldObjects.getObjects(),
+-                                  worldObjects.getObjectCount(),
+-                                  currentZone, camera);
+-
+-        renderer.drawGatherNodes(gatherNodes.getNodes(),
+-                                 gatherNodes.getNodeCount(),
+-                                 currentZone, camera);
+-
+-        renderer.drawEnemies(enemies.getEnemies(),
+-                             enemies.getEnemyCount(),
+-                             currentZone, camera);
+-
+-        renderer.drawNPCs(npcs, currentZone, camera);
+-
+-        if (questMgr.markerVisible(currentZone)) {
+-            renderer.drawQuestMarker(questMgr.getMarkerX(), questMgr.getMarkerY(),
+-                                     camera, timeAccum);
+-        }
+-
+-        renderer.drawPlayer(player.getX(), player.getY(), camera,
+-                            player.getFacing(), player.getAnimFrame());
+-
+-        renderer.drawClockDebug(clock.getFPS(),
+-                                worldClock.getHour(),
+-                                worldClock.getMinute(),
+-                                dayNight.getPhaseName());
+-
+-        renderer.drawTint(dayNight.getTintColor());
+-        renderer.drawFade(zones.getFadeAlpha());
+-
+-        if (zones.showZoneName()) {
+-            renderer.drawZoneName(zones.getCurrentZoneDef().name,
+-                                  zones.getNameAlpha());
+-        }
+-
+-        // Save/load status message, combat feedback, or inventory
+-        // equip/unequip feedback if more recent — reuses the existing
+-        // message/timer banner rather than adding a second on-screen
+-        // text system, per the Milestone 8 assignment's explicit
+-        // instruction to reuse the project's message/timer pattern
+-        // instead of building new UI (Milestone 9 follows the same rule
+-        // for the new inventory screen's feedback).
+-        if (invMessageTimer > 0.0f && invMessage != nullptr) {
+-            float alpha = (invMessageTimer < 0.5f) ? invMessageTimer / 0.5f : 1.0f;
+-            renderer.drawStatusMessage(invMessage, alpha);
+-        } else if (combatMessageTimer > 0.0f && combatMessage != nullptr) {
+-            float alpha = (combatMessageTimer < 0.5f) ? combatMessageTimer / 0.5f : 1.0f;
+-            renderer.drawStatusMessage(combatMessage, alpha);
+-        } else if (statusTimer > 0.0f && statusMessage != nullptr) {
+-            float alpha = (statusTimer < 0.5f) ? statusTimer / 0.5f : 1.0f;
+-            renderer.drawStatusMessage(statusMessage, alpha);
+-        }
+-
+-        // Bottom screen: inventory screen → shop → dialogue → quest HUD
+-        if (invScreen.isOpen()) {
+-            renderer.drawInventoryScreen(invScreen.getCursor(), playerState);
+-        } else if (shop.isOpen()) {
+-            renderer.drawShop(shop.getCursor(), playerState.gold,
+-                              shopMessage, shopMessageTimer);
+-        } else if (npcs.isDialogueOpen()) {
+-            renderer.drawDialogue(npcs.getActiveDialogueNPC());
+-        } else {
+-            const char* displayText = questMgr.getActiveObjectiveText();
+-            if (worldObjects.hasMessage()) {
+-                displayText = worldObjects.getLastMessage();
+-            } else if (gatherNodes.hasMessage()) {
+-                displayText = gatherNodes.getLastMessage();
+-            } else if (enemies.hasMessage()) {
+-                displayText = enemies.getLastMessage();
+-            }
+-            renderer.drawQuestHUD(displayText, playerState.hp, playerState.maxHp,
+-                                  playerState.gold, playerState.wood, playerState.rope,
+-                                  playerState.getAttack(), playerState.getDefense());
+-        }
+-
++        gameplay.update(input, dt);
++        gameplay.render(renderer, timeAccum, clock.getFPS());
+         renderer.endFrame();
+     }
+ 
+diff --git a/source/npc/NPC.h b/source/npc/NPC.h
+index 1896a28..ee72d18 100644
+--- a/source/npc/NPC.h
++++ b/source/npc/NPC.h
+@@ -13,13 +13,22 @@
+ //
+ // Schedule:
+ //   ScheduleEntry stays defined here (not NPCDef.h) since NPCManager's
+-//   movement code (moveNPC, evaluateSchedule) operates on
+-//   ScheduleEntry directly and NPCDef.h already depends on NPC.h for
+-//   it — keeping the type in NPC.h avoids a circular header dependency
+-//   between NPC.h and NPCDef.h.
++//   movement code (evaluateSchedule, and the shared seekTowardTarget
++//   in source/core/Movement.h) operates on ScheduleEntry directly and
++//   NPCDef.h already depends on NPC.h for it — keeping the type in
++//   NPC.h avoids a circular header dependency between NPC.h and
++//   NPCDef.h.
+ //   Each entry says: "at or after this time, go to this tile position."
+-//   The active entry is the one with the highest start_minute <= current time.
+-//   Entries must be sorted by start_minute ascending in the data.
++//   The active entry is the one with the largest start_minute that is
++//   still <= current time, wrapping correctly across midnight.
++//   Entries do NOT need to be sorted by start_minute in the array —
++//   evaluateSchedule() (Milestone 12) finds the correct entry by value
++//   comparison, not array position. This used to be a real bug: an
++//   earlier version required ascending order and silently broke the
++//   moment any NPC's midnight-wraparound entry (start_minute == 0) was
++//   written last in the array for narrative readability — which every
++//   NPC's data already did, meaning schedules never worked correctly
++//   for any NPC at any time before this fix.
+ //
+ // Movement:
+ //   NPCs move one axis at a time: horizontal first, then vertical.
+diff --git a/source/npc/NPCManager.cpp b/source/npc/NPCManager.cpp
+index 1fad094..64bfe12 100644
+--- a/source/npc/NPCManager.cpp
++++ b/source/npc/NPCManager.cpp
+@@ -3,8 +3,9 @@
+ //-----------------------------------------------------------------------------
+ 
+ #include "NPCManager.h"
++#include "../core/Movement.h"
+ #include "../quest/QuestManager.h"
+-#include "../quest/PlayerState.h"
++#include "../player/PlayerState.h"
+ #include "../core/Logger.h"
+ #include <cstring>
+ #include <cmath>
+@@ -57,13 +58,39 @@ void NPCManager::evaluateSchedule(NPC& npc, int currentMinute) {
+     const NPCDef& def = getNPCDef(npc.defIndex);
+     if (def.schedule_count == 0) return;
+ 
+-    int best = 0;
++    // Find the entry with the LARGEST start_minute that is still
++    // <= currentMinute — independent of array order. This is a real
++    // fix, not a refactor: the previous version picked whichever
++    // qualifying entry came LAST in array order, which only matches
++    // "largest start_minute so far" if the data happens to be sorted
++    // ascending. Every NPC's actual schedule places its midnight-
++    // wraparound entry (start_minute == 0) last in array order for
++    // narrative readability ("Sleep" reads naturally as the final
++    // event of the written day) — and since 0 <= currentMinute holds
++    // for every possible time of day, that entry always "qualified
++    // last" and always won, regardless of what time it actually was.
++    // Confirmed this was already true before any Milestone 12 change
++    // by re-running the same check against the pre-refactor code.
++    int best          = -1;
++    int bestStart     = -1;
++    int overallLatest = 0; // index of the single largest start_minute,
++                            // used for the before-the-first-entry-of-
++                            // the-day wraparound case below.
+     for (int i = 0; i < def.schedule_count; i++) {
+-        if (def.schedule[i].start_minute <= currentMinute) best = i;
++        int start = def.schedule[i].start_minute;
++        if (start > def.schedule[overallLatest].start_minute) overallLatest = i;
++        if (start <= currentMinute && start > bestStart) {
++            best      = i;
++            bestStart = start;
++        }
+     }
+-    if (def.schedule[0].start_minute > currentMinute) {
+-        best = def.schedule_count - 1;
++    if (best < 0) {
++        // No entry's start_minute has been reached yet today (e.g. it's
++        // 02:00 and the earliest entry is 06:00) — the active entry is
++        // still the latest one overall, carried over from "yesterday".
++        best = overallLatest;
+     }
++
+     if (npc.active_entry != best) {
+         npc.active_entry = best;
+         const ScheduleEntry& entry = def.schedule[best];
+@@ -80,43 +107,10 @@ void NPCManager::snapToSchedule(NPC& npc, int currentMinute) {
+     npc.pos_y = npc.target_y;
+ }
+ 
+-bool NPCManager::moveNPC(NPC& npc, const TileMap& map, float dt) {
+-    float dx   = npc.target_x - npc.pos_x;
+-    float dy   = npc.target_y - npc.pos_y;
+-    float dist = sqrtf(dx * dx + dy * dy);
+-    if (dist <= ARRIVAL_THRESHOLD) {
+-        npc.anim.update(0.0f, 0.0f, dt);
+-        return false;
+-    }
+-
+-    float step = NPC_SPEED * dt;
+-    float velX = 0.0f;
+-    float velY = 0.0f;
+-
+-    if (fabsf(dx) > ARRIVAL_THRESHOLD) {
+-        float moveX = (dx > 0.0f ? 1.0f : -1.0f) * std::min(step, fabsf(dx));
+-        float newX  = npc.pos_x + moveX;
+-        int tx = static_cast<int>(newX + 8) / TILE_SIZE;
+-        int ty = static_cast<int>(npc.pos_y + 8) / TILE_SIZE;
+-        if (!map.isSolid(tx, ty)) {
+-            npc.pos_x = newX;
+-            velX = (dx > 0.0f ? 1.0f : -1.0f) * NPC_SPEED;
+-        }
+-    } else if (fabsf(dy) > ARRIVAL_THRESHOLD) {
+-        float moveY = (dy > 0.0f ? 1.0f : -1.0f) * std::min(step, fabsf(dy));
+-        float newY  = npc.pos_y + moveY;
+-        int tx = static_cast<int>(npc.pos_x + 8) / TILE_SIZE;
+-        int ty = static_cast<int>(newY + 8) / TILE_SIZE;
+-        if (!map.isSolid(tx, ty)) {
+-            npc.pos_y = newY;
+-            velY = (dy > 0.0f ? 1.0f : -1.0f) * NPC_SPEED;
+-        }
+-    }
+-
+-    npc.anim.update(velX, velY, dt);
+-    return true;
+-}
+-
++// moveNPC() was removed in Milestone 12 — its logic is now the shared
++// seekTowardTarget() in source/core/Movement.cpp, called directly from
++// update() below with NPC_SPEED/ARRIVAL_THRESHOLD passed through
++// unchanged.
+ void NPCManager::update(ZoneID currentZone, int currentMinute,
+                          bool hourChanged, const TileMap& map, float dt) {
+     for (int i = 0; i < MAX_NPCS; i++) {
+@@ -126,7 +120,8 @@ void NPCManager::update(ZoneID currentZone, int currentMinute,
+         if (def.home_zone != currentZone)  continue;
+         if (npc.dialogue_active)           continue;
+         if (hourChanged) evaluateSchedule(npc, currentMinute);
+-        moveNPC(npc, map, dt);
++        seekTowardTarget(npc.pos_x, npc.pos_y, npc.target_x, npc.target_y,
++                         NPC_SPEED, ARRIVAL_THRESHOLD, dt, map, npc.anim);
+     }
+ }
+ 
+diff --git a/source/npc/NPCManager.h b/source/npc/NPCManager.h
+index 8faca84..4ca5388 100644
+--- a/source/npc/NPCManager.h
++++ b/source/npc/NPCManager.h
+@@ -96,8 +96,10 @@ private:
+     // Snap NPC to scheduled position without movement (used on zone load).
+     void snapToSchedule(NPC& npc, int currentMinute);
+ 
+-    // Move NPC toward target_x/target_y. Stops at ARRIVAL_THRESHOLD.
+-    // Returns true if still moving.
+-    bool moveNPC(NPC& npc, const TileMap& map, float dt);
++    // Move toward target_x/target_y is now handled by the shared
++    // seekTowardTarget() (source/core/Movement.h) — see update()'s
++    // call site. The old private moveNPC() method, which duplicated
++    // EnemyManager::moveToward()'s logic exactly, was removed in
++    // Milestone 12.
+ };
+ 
+diff --git a/source/player/InventoryScreen.h b/source/player/InventoryScreen.h
+index f55b1c8..63fb24a 100644
+--- a/source/player/InventoryScreen.h
++++ b/source/player/InventoryScreen.h
+@@ -47,7 +47,7 @@
+ //-----------------------------------------------------------------------------
+ 
+ #include "../../include/types.h"
+-#include "../quest/PlayerState.h"
++#include "PlayerState.h"
+ #include "../data/ItemDatabase.h"
+ 
+ enum class InventoryAction : u8 {
+diff --git a/source/quest/QuestManager.cpp b/source/quest/QuestManager.cpp
+index f34984e..26bf587 100644
+--- a/source/quest/QuestManager.cpp
++++ b/source/quest/QuestManager.cpp
+@@ -3,7 +3,7 @@
+ //-----------------------------------------------------------------------------
+ 
+ #include "QuestManager.h"
+-#include "../quest/PlayerState.h"
++#include "../player/PlayerState.h"
+ #include "../core/Logger.h"
+ #include <cstring>
+ #include <cmath>
+diff --git a/source/quest/QuestManager.h b/source/quest/QuestManager.h
+index 95b495f..c02d9bb 100644
+--- a/source/quest/QuestManager.h
++++ b/source/quest/QuestManager.h
+@@ -35,7 +35,7 @@
+ 
+ #include "../../include/types.h"
+ #include "QuestDatabase.h"
+-#include "PlayerState.h"
++#include "../player/PlayerState.h"
+ 
+ enum class QuestStatus : u8 {
+     NOT_STARTED = 0,
+diff --git a/source/render/Renderer.cpp b/source/render/Renderer.cpp
+index a966b14..5b3647e 100644
+--- a/source/render/Renderer.cpp
++++ b/source/render/Renderer.cpp
+@@ -3,6 +3,7 @@
+ //-----------------------------------------------------------------------------
+ 
+ #include "Renderer.h"
++#include "SpriteIndex.h"
+ #include "../world/WorldObject.h"
+ #include "../core/Logger.h"
+ 
+@@ -71,9 +72,9 @@ bool Renderer::init() {
+     if (m_spriteSheet) {
+         size_t count = C2D_SpriteSheetCount(m_spriteSheet);
+         if (count >= 3) {
+-            m_imgGrass  = C2D_SpriteSheetGetImage(m_spriteSheet, 0);
+-            m_imgWall   = C2D_SpriteSheetGetImage(m_spriteSheet, 1);
+-            m_imgPlayer = C2D_SpriteSheetGetImage(m_spriteSheet, 2);
++            m_imgGrass  = C2D_SpriteSheetGetImage(m_spriteSheet, static_cast<size_t>(TileSpriteIndex::GRASS));
++            m_imgWall   = C2D_SpriteSheetGetImage(m_spriteSheet, static_cast<size_t>(TileSpriteIndex::WALL));
++            m_imgPlayer = C2D_SpriteSheetGetImage(m_spriteSheet, static_cast<size_t>(TileSpriteIndex::PLAYER));
+             m_useFallbackColors = false;
+             LOG("Sprite sheet loaded (%zu sprites)", count);
+         } else {
+diff --git a/source/render/Renderer.h b/source/render/Renderer.h
+index f193926..e8e9ec9 100644
+--- a/source/render/Renderer.h
++++ b/source/render/Renderer.h
+@@ -28,7 +28,7 @@
+ #include "../combat/Enemy.h"
+ #include "../combat/EnemyDatabase.h"
+ #include "../world/Shop.h"
+-#include "../quest/PlayerState.h"
++#include "../player/PlayerState.h"
+ #include "../npc/NPC.h"
+ #include "../npc/NPCDatabase.h"
+ #include "../npc/NPCManager.h"
+diff --git a/source/save/SaveData.h b/source/save/SaveData.h
+index 41c6dd3..4af0690 100644
+--- a/source/save/SaveData.h
++++ b/source/save/SaveData.h
+@@ -66,8 +66,8 @@
+ //-----------------------------------------------------------------------------
+ 
+ #include "../../include/types.h"
+-#include "../quest/PlayerState.h"
+-#include "../quest/Inventory.h"
++#include "../player/PlayerState.h"
++#include "../player/Inventory.h"
+ #include "../world/WorldObject.h"
+ #include "../quest/QuestManager.h"
+ #include <cstddef>  // offsetof
+diff --git a/source/save/SaveManager.h b/source/save/SaveManager.h
+index 7bc3e58..49610d5 100644
+--- a/source/save/SaveManager.h
++++ b/source/save/SaveManager.h
+@@ -27,7 +27,7 @@
+ 
+ #include "../../include/types.h"
+ #include "SaveData.h"
+-#include "../quest/PlayerState.h"
++#include "../player/PlayerState.h"
+ #include "../quest/QuestManager.h"
+ #include "../world/WorldObjectManager.h"
+ #include "../world/ZoneManager.h"
+diff --git a/source/world/GatherNodeManager.h b/source/world/GatherNodeManager.h
+index ecb42d3..be7012e 100644
+--- a/source/world/GatherNodeManager.h
++++ b/source/world/GatherNodeManager.h
+@@ -20,7 +20,7 @@
+ 
+ #include "../../include/types.h"
+ #include "GatherNode.h"
+-#include "../quest/PlayerState.h"
++#include "../player/PlayerState.h"
+ 
+ class GatherNodeManager {
+ public:
+diff --git a/source/world/Shop.h b/source/world/Shop.h
+index 1ea8593..fc2e51c 100644
+--- a/source/world/Shop.h
++++ b/source/world/Shop.h
+@@ -45,7 +45,7 @@
+ 
+ #include "../../include/types.h"
+ #include "../data/ItemDatabase.h"
+-#include "../quest/PlayerState.h"
++#include "../player/PlayerState.h"
+ 
+ static constexpr int MAX_SHOP_ITEMS = 11;
+ 
+diff --git a/source/world/WorldObjectManager.h b/source/world/WorldObjectManager.h
+index 2e53693..1168fae 100644
+--- a/source/world/WorldObjectManager.h
++++ b/source/world/WorldObjectManager.h
+@@ -25,7 +25,7 @@
+ #include "../../include/types.h"
+ #include "WorldObject.h"
+ #include "TileMap.h"
+-#include "../quest/PlayerState.h"
++#include "../player/PlayerState.h"
+ 
+ // Forward declaration for quest hook
+ class QuestManager;

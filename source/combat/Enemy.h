@@ -47,6 +47,35 @@ enum class EnemyAIState : u8 {
     RETURN = 3,
 };
 
+// Milestone 12, Task 7: combat robustness additions — hit
+// invulnerability, hit-flash preparation, and a minimal knockback hook.
+// All three default to "no effect" (zero timers / zero velocity), so an
+// Enemy that's never been hit behaves identically to before this
+// milestone; these fields only do anything once EnemyManager::tryAttack
+// (or a future caller) sets them.
+static constexpr float HIT_INVULN_DURATION_SEC = 0.2f; // matches the
+    // existing 0.5s player attack cooldown's intent loosely — short
+    // enough that a legitimate fast follow-up hit still lands, long
+    // enough to make a single swing register as exactly one hit even
+    // if tryAttack() were ever called more than once in a frame (it
+    // currently isn't, but this is the kind of invariant worth making
+    // explicit and enforced rather than implicit and merely true today
+    // — see Movement.h's header comment for the same philosophy
+    // applied to knockback below).
+static constexpr float HIT_FLASH_DURATION_SEC  = 0.1f; // how long
+    // hitFlashTimer stays nonzero after a hit, for a future renderer
+    // change to read and tint the sprite — no rendering code reads
+    // this field yet (see Renderer::drawEnemies, unchanged this
+    // milestone); it exists so the data is ready the moment a flash
+    // effect is implemented, without another pass through EnemyManager.
+static constexpr float KNOCKBACK_DECAY_PER_SEC = 600.0f; // pixels/sec^2
+    // equivalent — how fast knockbackVelX/Y bleeds off toward zero.
+    // Not currently applied by anything (no caller sets a nonzero
+    // knockback velocity yet — this is the "hook," not a triggered
+    // effect), but EnemyManager::updateAI() decays and applies it
+    // unconditionally so the field is live infrastructure, not dead
+    // weight waiting for a second pass to wire in.
+
 struct Enemy {
     u8        id;
     EnemyType type;   // which EnemyDef this instance represents — see
@@ -67,6 +96,13 @@ struct Enemy {
 
     EnemyAIState state;
     float        attackCooldown;  // seconds remaining until next attack tick
+
+    // Milestone 12, Task 7 — see the constants above for what each of
+    // these is for. All zero-initialized, all "no effect" until set.
+    float hitInvulnTimer;  // seconds remaining where this enemy can't be hit again
+    float hitFlashTimer;   // seconds remaining to show a hit-flash (rendering not yet wired)
+    float knockbackVelX;   // pixels/second, decays toward 0 via KNOCKBACK_DECAY_PER_SEC
+    float knockbackVelY;
 
     AnimState anim;   // reused as-is from Milestone 6 — same facing/walk-
                        // frame struct already used by Player and NPC.

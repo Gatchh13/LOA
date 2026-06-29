@@ -20,7 +20,7 @@
 
 #include "../../include/types.h"
 #include "GatherNode.h"
-#include "../quest/PlayerState.h"
+#include "../player/PlayerState.h"
 
 class GatherNodeManager {
 public:

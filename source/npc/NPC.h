@@ -13,13 +13,22 @@
 //
 // Schedule:
 //   ScheduleEntry stays defined here (not NPCDef.h) since NPCManager's
-//   movement code (moveNPC, evaluateSchedule) operates on
-//   ScheduleEntry directly and NPCDef.h already depends on NPC.h for
-//   it — keeping the type in NPC.h avoids a circular header dependency
-//   between NPC.h and NPCDef.h.
+//   movement code (evaluateSchedule, and the shared seekTowardTarget
+//   in source/core/Movement.h) operates on ScheduleEntry directly and
+//   NPCDef.h already depends on NPC.h for it — keeping the type in
+//   NPC.h avoids a circular header dependency between NPC.h and
+//   NPCDef.h.
 //   Each entry says: "at or after this time, go to this tile position."
-//   The active entry is the one with the highest start_minute <= current time.
-//   Entries must be sorted by start_minute ascending in the data.
+//   The active entry is the one with the largest start_minute that is
+//   still <= current time, wrapping correctly across midnight.
+//   Entries do NOT need to be sorted by start_minute in the array —
+//   evaluateSchedule() (Milestone 12) finds the correct entry by value
+//   comparison, not array position. This used to be a real bug: an
+//   earlier version required ascending order and silently broke the
+//   moment any NPC's midnight-wraparound entry (start_minute == 0) was
+//   written last in the array for narrative readability — which every
+//   NPC's data already did, meaning schedules never worked correctly
+//   for any NPC at any time before this fix.
 //
 // Movement:
 //   NPCs move one axis at a time: horizontal first, then vertical.

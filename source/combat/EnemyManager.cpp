@@ -3,6 +3,7 @@
 //-----------------------------------------------------------------------------
 
 #include "EnemyManager.h"
+#include "../core/Movement.h"
 #include "../data/ItemDatabase.h"
 #include "../world/SpawnDatabase.h"
 #include "../core/Logger.h"
@@ -63,6 +64,10 @@ void EnemyManager::init() {
         e.hp              = def.maxHp;
         e.state           = EnemyAIState::IDLE;
         e.attackCooldown  = 0.0f;
+        e.hitInvulnTimer  = 0.0f;
+        e.hitFlashTimer   = 0.0f;
+        e.knockbackVelX   = 0.0f;
+        e.knockbackVelY   = 0.0f;
         e.anim            = AnimState{};
         e.active          = true;
     }
@@ -79,43 +84,10 @@ void EnemyManager::init() {
 // rather than invent movement logic. Returns true if the enemy actually
 // moved.
 //-----------------------------------------------------------------------------
-bool EnemyManager::moveToward(Enemy& e, float targetX, float targetY,
-                              float dt, const TileMap& map) {
-    float dx   = targetX - e.pos_x;
-    float dy   = targetY - e.pos_y;
-    float dist = sqrtf(dx * dx + dy * dy);
-    if (dist <= ENEMY_RETURN_THRESHOLD) {
-        e.anim.update(0.0f, 0.0f, dt);
-        return false;
-    }
-
-    float step = ENEMY_SPEED * dt;
-    float velX = 0.0f;
-    float velY = 0.0f;
-
-    if (fabsf(dx) > ENEMY_RETURN_THRESHOLD) {
-        float moveX = (dx > 0.0f ? 1.0f : -1.0f) * std::min(step, fabsf(dx));
-        float newX  = e.pos_x + moveX;
-        int tx = static_cast<int>(newX + 8) / TILE_SIZE;
-        int ty = static_cast<int>(e.pos_y + 8) / TILE_SIZE;
-        if (!map.isSolid(tx, ty)) {
-            e.pos_x = newX;
-            velX = (dx > 0.0f ? 1.0f : -1.0f) * ENEMY_SPEED;
-        }
-    } else if (fabsf(dy) > ENEMY_RETURN_THRESHOLD) {
-        float moveY = (dy > 0.0f ? 1.0f : -1.0f) * std::min(step, fabsf(dy));
-        float newY  = e.pos_y + moveY;
-        int tx = static_cast<int>(e.pos_x + 8) / TILE_SIZE;
-        int ty = static_cast<int>(newY + 8) / TILE_SIZE;
-        if (!map.isSolid(tx, ty)) {
-            e.pos_y = newY;
-            velY = (dy > 0.0f ? 1.0f : -1.0f) * ENEMY_SPEED;
-        }
-    }
-
-    e.anim.update(velX, velY, dt);
-    return true;
-}
+// moveToward() was removed in Milestone 12 — its logic is now the
+// shared seekTowardTarget() in source/core/Movement.cpp, called
+// directly from updateAI() below with ENEMY_SPEED/ENEMY_RETURN_THRESHOLD
+// passed through unchanged.
 
 //-----------------------------------------------------------------------------
 // updateAI — Idle -> Chase -> Attack -> Return state machine.
@@ -126,6 +98,43 @@ bool EnemyManager::moveToward(Enemy& e, float targetX, float targetY,
 //-----------------------------------------------------------------------------
 void EnemyManager::updateAI(Enemy& e, float playerX, float playerY,
                             float dt, const TileMap& map) {
+    // Milestone 12, Task 7: knockback application + decay, and hit-
+    // invuln/hit-flash timer countdown. Runs unconditionally, before
+    // the state-machine switch below, so it applies regardless of
+    // which AI state the enemy is in (a knocked-back enemy mid-CHASE
+    // still gets pushed; an enemy that's just been hit is still briefly
+    // invulnerable whether it's chasing, attacking, or idling).
+    if (e.hitInvulnTimer > 0.0f) {
+        e.hitInvulnTimer -= dt;
+        if (e.hitInvulnTimer < 0.0f) e.hitInvulnTimer = 0.0f;
+    }
+    if (e.hitFlashTimer > 0.0f) {
+        e.hitFlashTimer -= dt;
+        if (e.hitFlashTimer < 0.0f) e.hitFlashTimer = 0.0f;
+    }
+    if (e.knockbackVelX != 0.0f || e.knockbackVelY != 0.0f) {
+        // Apply this frame's displacement directly — knockback is an
+        // external push, not something seekTowardTarget() needs to
+        // know about (see Movement.h's header comment on why this
+        // separation was the design from the start, not an
+        // afterthought). No tile-collision check on the knockback
+        // displacement itself: with KNOCKBACK_DECAY_PER_SEC this fast
+        // and no caller currently setting a nonzero velocity, a real
+        // knockback effect's tuning (and whether it should respect
+        // walls) is exactly the kind of decision deferred to whichever
+        // future milestone actually triggers this hook for the first
+        // time — see the Milestone 12 design doc's "Document Future
+        // Refactors" section.
+        e.pos_x += e.knockbackVelX * dt;
+        e.pos_y += e.knockbackVelY * dt;
+
+        float decay = KNOCKBACK_DECAY_PER_SEC * dt;
+        if (fabsf(e.knockbackVelX) <= decay) e.knockbackVelX = 0.0f;
+        else e.knockbackVelX -= (e.knockbackVelX > 0.0f ? decay : -decay);
+        if (fabsf(e.knockbackVelY) <= decay) e.knockbackVelY = 0.0f;
+        else e.knockbackVelY -= (e.knockbackVelY > 0.0f ? decay : -decay);
+    }
+
     float dx   = playerX - e.pos_x;
     float dy   = playerY - e.pos_y;
     float distToPlayer = sqrtf(dx * dx + dy * dy);
@@ -145,7 +154,8 @@ void EnemyManager::updateAI(Enemy& e, float playerX, float playerY,
             } else if (distToPlayer > ENEMY_DETECT_RANGE_PX) {
                 e.state = EnemyAIState::RETURN;
             } else {
-                moveToward(e, playerX, playerY, dt, map);
+                seekTowardTarget(e.pos_x, e.pos_y, playerX, playerY,
+                                 ENEMY_SPEED, ENEMY_RETURN_THRESHOLD, dt, map, e.anim);
             }
             break;
 
@@ -165,7 +175,8 @@ void EnemyManager::updateAI(Enemy& e, float playerX, float playerY,
             break;
 
         case EnemyAIState::RETURN: {
-            bool stillMoving = moveToward(e, e.spawn_x, e.spawn_y, dt, map);
+            bool stillMoving = seekTowardTarget(e.pos_x, e.pos_y, e.spawn_x, e.spawn_y,
+                                                ENEMY_SPEED, ENEMY_RETURN_THRESHOLD, dt, map, e.anim);
             if (distToPlayer <= ENEMY_DETECT_RANGE_PX) {
                 // Player re-entered range while heading home — chase again.
                 e.state = EnemyAIState::CHASE;
@@ -239,31 +250,47 @@ AttackResult EnemyManager::tryAttack(float playerX, float playerY, Facing player
     if (!xPressed) return AttackResult::NONE;
     if (m_attackCooldownRemaining > 0.0f) return AttackResult::NONE;
 
-    // Facing-direction reach: the attack hitbox is a point offset from
-    // the player's center in their facing direction, then a closest-
-    // enemy-in-range check — same closest-wins pattern as
-    // WorldObjectManager::tryInteract / GatherNodeManager::tryHarvest.
-    float reachX = playerX;
-    float reachY = playerY;
+    // Milestone 12, Task 7: directional attack cone, replacing the
+    // previous point-offset+radius check. An enemy must be within
+    // ATTACK_RANGE_PX of the player's actual center AND within
+    // ATTACK_CONE_HALF_ANGLE_DEG of the player's facing direction.
+    // Same closest-wins pattern as before (WorldObjectManager::
+    // tryInteract / GatherNodeManager::tryHarvest) for picking among
+    // multiple candidates in range.
+    float facingDirX = 0.0f, facingDirY = 0.0f;
     switch (playerFacing) {
-        case Facing::UP:    reachY -= ATTACK_RANGE_PX; break;
-        case Facing::DOWN:  reachY += ATTACK_RANGE_PX; break;
-        case Facing::LEFT:  reachX -= ATTACK_RANGE_PX; break;
-        case Facing::RIGHT: reachX += ATTACK_RANGE_PX; break;
+        case Facing::UP:    facingDirX =  0.0f; facingDirY = -1.0f; break;
+        case Facing::DOWN:  facingDirX =  0.0f; facingDirY =  1.0f; break;
+        case Facing::LEFT:  facingDirX = -1.0f; facingDirY =  0.0f; break;
+        case Facing::RIGHT: facingDirX =  1.0f; facingDirY =  0.0f; break;
     }
+    float coneHalfAngleRad = ATTACK_CONE_HALF_ANGLE_DEG * (3.14159265f / 180.0f);
+    float cosConeHalfAngle = cosf(coneHalfAngleRad);
 
     float closest = ATTACK_RANGE_PX;
     int   bestIdx  = -1;
     for (int i = 0; i < MAX_ENEMIES; i++) {
         Enemy& e = m_enemies[i];
-        if (!e.active) continue;
-        float dx   = reachX - e.pos_x;
-        float dy   = reachY - e.pos_y;
+        if (!e.active)            continue;
+        if (e.hitInvulnTimer > 0.0f) continue; // Task 7: can't be hit again yet
+
+        float dx   = e.pos_x - playerX;
+        float dy   = e.pos_y - playerY;
         float dist = sqrtf(dx * dx + dy * dy);
-        if (dist <= closest) {
-            closest = dist;
-            bestIdx = i;
+        if (dist > closest) continue;
+        if (dist < 0.001f) {
+            // Enemy is essentially on top of the player — no direction
+            // to compare against the facing cone, treat as in-cone
+            // rather than dividing by ~zero.
+        } else {
+            float dirX = dx / dist;
+            float dirY = dy / dist;
+            float dot  = dirX * facingDirX + dirY * facingDirY; // cos(angle between)
+            if (dot < cosConeHalfAngle) continue; // outside the cone
         }
+
+        closest = dist;
+        bestIdx = i;
     }
 
     m_attackCooldownRemaining = ATTACK_COOLDOWN_SEC;
@@ -280,6 +307,14 @@ AttackResult EnemyManager::tryAttack(float playerX, float playerY, Facing player
     // can never go below PLAYER_BASE_ATTACK.
     u16 dmg = playerState.getAttack();
     e.hp = (dmg >= e.hp) ? 0 : static_cast<u16>(e.hp - dmg);
+
+    // Milestone 12, Task 7: start the hit-invuln and hit-flash windows.
+    // Set unconditionally on any successful hit (including a killing
+    // blow — the enemy deactivates immediately below regardless, so
+    // these timers are simply irrelevant for a dead enemy rather than
+    // needing a special case to skip them).
+    e.hitInvulnTimer = HIT_INVULN_DURATION_SEC;
+    e.hitFlashTimer  = HIT_FLASH_DURATION_SEC;
 
     LOG("Player hit enemy %d (%s) for %u damage (atk=%u). Enemy HP: %u/%u",
         e.id, def.name, dmg, playerState.getAttack(), e.hp, def.maxHp);
@@ -341,6 +376,10 @@ void EnemyManager::respawnAll() {
         e.pos_y  = e.spawn_y;
         e.state  = EnemyAIState::IDLE;
         e.attackCooldown = 0.0f;
+        e.hitInvulnTimer = 0.0f;
+        e.hitFlashTimer  = 0.0f;
+        e.knockbackVelX  = 0.0f;
+        e.knockbackVelY  = 0.0f;
     }
     LOG("EnemyManager: all enemies respawned at full HP");
 }

@@ -28,7 +28,7 @@
 #include "../combat/Enemy.h"
 #include "../combat/EnemyDatabase.h"
 #include "../world/Shop.h"
-#include "../quest/PlayerState.h"
+#include "../player/PlayerState.h"
 #include "../npc/NPC.h"
 #include "../npc/NPCDatabase.h"
 #include "../npc/NPCManager.h"

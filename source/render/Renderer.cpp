@@ -3,6 +3,7 @@
 //-----------------------------------------------------------------------------
 
 #include "Renderer.h"
+#include "SpriteIndex.h"
 #include "../world/WorldObject.h"
 #include "../core/Logger.h"
 
@@ -71,9 +72,9 @@ bool Renderer::init() {
     if (m_spriteSheet) {
         size_t count = C2D_SpriteSheetCount(m_spriteSheet);
         if (count >= 3) {
-            m_imgGrass  = C2D_SpriteSheetGetImage(m_spriteSheet, 0);
-            m_imgWall   = C2D_SpriteSheetGetImage(m_spriteSheet, 1);
-            m_imgPlayer = C2D_SpriteSheetGetImage(m_spriteSheet, 2);
+            m_imgGrass  = C2D_SpriteSheetGetImage(m_spriteSheet, static_cast<size_t>(TileSpriteIndex::GRASS));
+            m_imgWall   = C2D_SpriteSheetGetImage(m_spriteSheet, static_cast<size_t>(TileSpriteIndex::WALL));
+            m_imgPlayer = C2D_SpriteSheetGetImage(m_spriteSheet, static_cast<size_t>(TileSpriteIndex::PLAYER));
             m_useFallbackColors = false;
             LOG("Sprite sheet loaded (%zu sprites)", count);
         } else {

@@ -66,8 +66,8 @@
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
-#include "../quest/PlayerState.h"
-#include "../quest/Inventory.h"
+#include "../player/PlayerState.h"
+#include "../player/Inventory.h"
 #include "../world/WorldObject.h"
 #include "../quest/QuestManager.h"
 #include <cstddef>  // offsetof

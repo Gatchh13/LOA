@@ -25,7 +25,7 @@
 #include "../../include/types.h"
 #include "WorldObject.h"
 #include "TileMap.h"
-#include "../quest/PlayerState.h"
+#include "../player/PlayerState.h"
 
 // Forward declaration for quest hook
 class QuestManager;

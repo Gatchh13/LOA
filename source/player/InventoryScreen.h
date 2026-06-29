@@ -47,7 +47,7 @@
 //-----------------------------------------------------------------------------
 
 #include "../../include/types.h"
-#include "../quest/PlayerState.h"
+#include "PlayerState.h"
 #include "../data/ItemDatabase.h"
 
 enum class InventoryAction : u8 {

@@ -3,8 +3,9 @@
 //-----------------------------------------------------------------------------
 
 #include "NPCManager.h"
+#include "../core/Movement.h"
 #include "../quest/QuestManager.h"
-#include "../quest/PlayerState.h"
+#include "../player/PlayerState.h"
 #include "../core/Logger.h"
 #include <cstring>
 #include <cmath>
@@ -57,13 +58,39 @@ void NPCManager::evaluateSchedule(NPC& npc, int currentMinute) {
     const NPCDef& def = getNPCDef(npc.defIndex);
     if (def.schedule_count == 0) return;
 
-    int best = 0;
+    // Find the entry with the LARGEST start_minute that is still
+    // <= currentMinute — independent of array order. This is a real
+    // fix, not a refactor: the previous version picked whichever
+    // qualifying entry came LAST in array order, which only matches
+    // "largest start_minute so far" if the data happens to be sorted
+    // ascending. Every NPC's actual schedule places its midnight-
+    // wraparound entry (start_minute == 0) last in array order for
+    // narrative readability ("Sleep" reads naturally as the final
+    // event of the written day) — and since 0 <= currentMinute holds
+    // for every possible time of day, that entry always "qualified
+    // last" and always won, regardless of what time it actually was.
+    // Confirmed this was already true before any Milestone 12 change
+    // by re-running the same check against the pre-refactor code.
+    int best          = -1;
+    int bestStart     = -1;
+    int overallLatest = 0; // index of the single largest start_minute,
+                            // used for the before-the-first-entry-of-
+                            // the-day wraparound case below.
     for (int i = 0; i < def.schedule_count; i++) {
-        if (def.schedule[i].start_minute <= currentMinute) best = i;
+        int start = def.schedule[i].start_minute;
+        if (start > def.schedule[overallLatest].start_minute) overallLatest = i;
+        if (start <= currentMinute && start > bestStart) {
+            best      = i;
+            bestStart = start;
+        }
     }
-    if (def.schedule[0].start_minute > currentMinute) {
-        best = def.schedule_count - 1;
+    if (best < 0) {
+        // No entry's start_minute has been reached yet today (e.g. it's
+        // 02:00 and the earliest entry is 06:00) — the active entry is
+        // still the latest one overall, carried over from "yesterday".
+        best = overallLatest;
     }
+
     if (npc.active_entry != best) {
         npc.active_entry = best;
         const ScheduleEntry& entry = def.schedule[best];
@@ -80,43 +107,10 @@ void NPCManager::snapToSchedule(NPC& npc, int currentMinute) {
     npc.pos_y = npc.target_y;
 }
 
-bool NPCManager::moveNPC(NPC& npc, const TileMap& map, float dt) {
-    float dx   = npc.target_x - npc.pos_x;
-    float dy   = npc.target_y - npc.pos_y;
-    float dist = sqrtf(dx * dx + dy * dy);
-    if (dist <= ARRIVAL_THRESHOLD) {
-        npc.anim.update(0.0f, 0.0f, dt);
-        return false;
-    }
-
-    float step = NPC_SPEED * dt;
-    float velX = 0.0f;
-    float velY = 0.0f;
-
-    if (fabsf(dx) > ARRIVAL_THRESHOLD) {
-        float moveX = (dx > 0.0f ? 1.0f : -1.0f) * std::min(step, fabsf(dx));
-        float newX  = npc.pos_x + moveX;
-        int tx = static_cast<int>(newX + 8) / TILE_SIZE;
-        int ty = static_cast<int>(npc.pos_y + 8) / TILE_SIZE;
-        if (!map.isSolid(tx, ty)) {
-            npc.pos_x = newX;
-            velX = (dx > 0.0f ? 1.0f : -1.0f) * NPC_SPEED;
-        }
-    } else if (fabsf(dy) > ARRIVAL_THRESHOLD) {
-        float moveY = (dy > 0.0f ? 1.0f : -1.0f) * std::min(step, fabsf(dy));
-        float newY  = npc.pos_y + moveY;
-        int tx = static_cast<int>(npc.pos_x + 8) / TILE_SIZE;
-        int ty = static_cast<int>(newY + 8) / TILE_SIZE;
-        if (!map.isSolid(tx, ty)) {
-            npc.pos_y = newY;
-            velY = (dy > 0.0f ? 1.0f : -1.0f) * NPC_SPEED;
-        }
-    }
-
-    npc.anim.update(velX, velY, dt);
-    return true;
-}
-
+// moveNPC() was removed in Milestone 12 — its logic is now the shared
+// seekTowardTarget() in source/core/Movement.cpp, called directly from
+// update() below with NPC_SPEED/ARRIVAL_THRESHOLD passed through
+// unchanged.
 void NPCManager::update(ZoneID currentZone, int currentMinute,
                          bool hourChanged, const TileMap& map, float dt) {
     for (int i = 0; i < MAX_NPCS; i++) {
@@ -126,7 +120,8 @@ void NPCManager::update(ZoneID currentZone, int currentMinute,
         if (def.home_zone != currentZone)  continue;
         if (npc.dialogue_active)           continue;
         if (hourChanged) evaluateSchedule(npc, currentMinute);
-        moveNPC(npc, map, dt);
+        seekTowardTarget(npc.pos_x, npc.pos_y, npc.target_x, npc.target_y,
+                         NPC_SPEED, ARRIVAL_THRESHOLD, dt, map, npc.anim);
     }
 }
 

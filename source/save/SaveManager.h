@@ -27,7 +27,7 @@
 
 #include "../../include/types.h"
 #include "SaveData.h"
-#include "../quest/PlayerState.h"
+#include "../player/PlayerState.h"
 #include "../quest/QuestManager.h"
 #include "../world/WorldObjectManager.h"
 #include "../world/ZoneManager.h"

@@ -96,8 +96,10 @@ private:
     // Snap NPC to scheduled position without movement (used on zone load).
     void snapToSchedule(NPC& npc, int currentMinute);
 
-    // Move NPC toward target_x/target_y. Stops at ARRIVAL_THRESHOLD.
-    // Returns true if still moving.
-    bool moveNPC(NPC& npc, const TileMap& map, float dt);
+    // Move toward target_x/target_y is now handled by the shared
+    // seekTowardTarget() (source/core/Movement.h) — see update()'s
+    // call site. The old private moveNPC() method, which duplicated
+    // EnemyManager::moveToward()'s logic exactly, was removed in
+    // Milestone 12.
 };
 

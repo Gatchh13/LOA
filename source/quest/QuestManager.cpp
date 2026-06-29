@@ -3,7 +3,7 @@
 //-----------------------------------------------------------------------------
 
 #include "QuestManager.h"
-#include "../quest/PlayerState.h"
+#include "../player/PlayerState.h"
 #include "../core/Logger.h"
 #include <cstring>
 #include <cmath>

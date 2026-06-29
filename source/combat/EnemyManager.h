@@ -27,13 +27,25 @@
 
 #include "../../include/types.h"
 #include "Enemy.h"
-#include "../quest/PlayerState.h"
+#include "../player/PlayerState.h"
 #include "../world/TileMap.h"
 
 // Player-facing combat tuning constants. Kept here (not in Enemy.h)
 // since they describe the player's attack, not enemy data.
 static constexpr float ATTACK_RANGE_PX     = 20.0f;  // melee reach from player center
 static constexpr float ATTACK_COOLDOWN_SEC = 0.5f;   // time between player attacks
+// Milestone 12, Task 7: directional attack cone half-angle in degrees.
+// 60 degrees half-angle (120 total) — generous enough that a player
+// who's roughly facing an enemy still hits it without needing pixel-
+// perfect aim, but narrow enough to exclude something directly beside
+// or behind the player. Replaces the previous "point offset + radius"
+// check (see tryAttack()'s header comment for why that wasn't
+// necessarily exploitable in practice, but was geometrically a
+// different shape than "what's in front of me" — this makes the
+// intent explicit and angle-based rather than implicit and distance-
+// based, which is more correct in general even where the old numbers
+// didn't expose a visible problem).
+static constexpr float ATTACK_CONE_HALF_ANGLE_DEG = 60.0f;
 // Milestone 9: player damage is now PlayerState::getAttack() (base +
 // weapon bonus), not a flat constant — see EnemyManager.cpp::tryAttack().
 // The old PLAYER_ATTACK_DAMAGE constant is gone rather than left unused
@@ -71,18 +83,52 @@ public:
     // enemy while talking to a different NPC or browsing the shop took
     // free damage — and could die — with no way to fight back, heal,
     // or even see it coming until the menu closed.
+    //
+    // IMPORTANT (Milestone 12, Task 7): this function decays every
+    // active enemy's hitInvulnTimer/hitFlashTimer/knockback (via
+    // updateAI(), called once per enemy here). tryAttack() reads
+    // hitInvulnTimer to gate hits but does NOT decay it — by design,
+    // to avoid two functions independently decrementing the same timer
+    // (a real double-decrement risk if both ever ran in the same frame,
+    // which they do in normal gameplay). This means update() and
+    // tryAttack() must both be called every frame for hit-invuln to
+    // behave correctly — true in actual gameplay (see Gameplay.cpp,
+    // which calls both unconditionally each frame) but worth stating
+    // explicitly: calling tryAttack() repeatedly WITHOUT calling
+    // update() in between will make every hit after the first appear
+    // to silently miss, since hitInvulnTimer never gets a chance to
+    // count down. (Caught by this milestone's own test suite, which
+    // initially made exactly this mistake.)
     void update(ZoneID currentZone, float playerX, float playerY,
                float dt, const TileMap& map, PlayerState& playerState,
                bool playerInvulnerable);
 
     // Player melee attack. Call when X is pressed. Damages the closest
-    // enemy within ATTACK_RANGE_PX of the player's facing direction, on
-    // a cooldown. Grants loot directly to playerState's inventory if the
-    // hit kills the enemy (see Enemy::lootItemId) — same "the function
-    // that causes the state change also grants the consequence" pattern
-    // as WorldObjectManager::repair() consuming resources inline.
+    // enemy within ATTACK_RANGE_PX AND within ATTACK_CONE_HALF_ANGLE_DEG
+    // of the player's facing direction (Milestone 12, Task 7 — a true
+    // directional cone, not a point-offset+radius check), on a
+    // cooldown, skipping any enemy still within its post-hit
+    // hitInvulnTimer window. Grants loot directly to playerState's
+    // inventory if the hit kills the enemy (see Enemy::lootItemId) —
+    // same "the function that causes the state change also grants the
+    // consequence" pattern as WorldObjectManager::repair() consuming
+    // resources inline.
     AttackResult tryAttack(float playerX, float playerY, Facing playerFacing,
                            bool xPressed, float dt, PlayerState& playerState);
+
+    // Milestone 12, Task 7 — knockback hook. Sets enemyIndex's
+    // knockbackVelX/Y directly; EnemyManager::updateAI() applies and
+    // decays it every frame regardless of AI state (see Enemy.h's
+    // KNOCKBACK_DECAY_PER_SEC). No current caller invokes this — it
+    // exists so a future feature (a charged attack, a specific weapon,
+    // a status effect) can push an enemy without needing another pass
+    // through EnemyManager to wire the application/decay logic, which
+    // already exists and is already exercised every frame.
+    void applyKnockback(int enemyIndex, float velX, float velY) {
+        if (enemyIndex < 0 || enemyIndex >= MAX_ENEMIES) return;
+        m_enemies[enemyIndex].knockbackVelX = velX;
+        m_enemies[enemyIndex].knockbackVelY = velY;
+    }
 
     // The message from the last tryAttack/contact-damage event (for HUD
     // display) — same message+timer pattern as WorldObjectManager/
@@ -112,7 +158,12 @@ private:
 
     char m_messageBuf[40];
 
-    // AI helpers — internal, mirror NPCManager::moveNPC's step pattern.
+    // AI state machine — Idle/Chase/Attack/Return transitions.
     void updateAI(Enemy& e, float playerX, float playerY, float dt, const TileMap& map);
-    bool moveToward(Enemy& e, float targetX, float targetY, float dt, const TileMap& map);
+
+    // Move toward a target point is now handled by the shared
+    // seekTowardTarget() (source/core/Movement.h) — see updateAI()'s
+    // call sites. The old private moveToward() method, which
+    // duplicated NPCManager::moveNPC()'s logic exactly, was removed in
+    // Milestone 12.
 };

@@ -35,7 +35,7 @@
 
 #include "../../include/types.h"
 #include "QuestDatabase.h"
-#include "PlayerState.h"
+#include "../player/PlayerState.h"
 
 enum class QuestStatus : u8 {
     NOT_STARTED = 0,
